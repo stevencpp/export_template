@@ -1,0 +1,5 @@
+.vs
+bin/
+intermediate/
+props/xt_user.props
+*.user

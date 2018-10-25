@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Xt_ClangPath       Condition="'$(Xt_ClangPath)'      ==''" >c:\Program Files\LLVM\bin</Xt_ClangPath>
+    <Xt_TargetsPath     Condition="'$(Xt_TargetsPath)'    ==''" >$(SolutionDir)build_rules\</Xt_TargetsPath>
+    <Xt_InstSuffix      Condition="'$(Xt_InstSuffix)'     ==''" >.xti</Xt_InstSuffix>
+    <Xt_InstFilePath    Condition="'$(Xt_InstFilePath)'   ==''" >$(SolutionDir)intermediate\src\$(ProjectName)\</Xt_InstFilePath>
+    <Xt_InstGen_Path    Condition="'$(Xt_InstGen_Path)'   ==''" >xt_inst_gen.exe</Xt_InstGen_Path>
+    <Xt_HeaderCachePath Condition="'$(Xt_HeaderCachePath)'==''" >$(IntDir)xt_header_cache.txt</Xt_HeaderCachePath>
+    <Xt_ProjectListFile Condition="'$(Xt_ProjectListFile)'==''" >$(IntDir)xt_project_list.txt</Xt_ProjectListFile>
+    <Xt_BuildLogPath    Condition="'$(Xt_BuildLogPath)'   ==''" >$(IntDir)$(MSBuildProjectName).log</Xt_BuildLogPath>
+  </PropertyGroup>
+  
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(Xt_InstFilePath);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  
+<!-- !-->
+  <ItemGroup>
+    <Xt_AllHeaders Include="$(MSBuildProjectDirectory)\**\*.*h" />
+    <Xt_InstFiles Include="@(Xt_AllHeaders->'$(Xt_InstFilePath)%(Filename)$(Xt_InstSuffix)')" />
+    <!--<ClInclude Include="@(Xt_InstFiles)" />!-->
+    <Xt_CurrentProject Include="$(ProjectPath)"> <Project>$(ProjectGuid)</Project> </Xt_CurrentProject>
+  </ItemGroup>
+  
+  <Target Name="XT_Header_Filter" BeforeTargets="Xt_Headers_Read" Inputs="@(Xt_AllHeaders)" Outputs="$(Xt_HeaderCachePath)">
+    <Message Text="generating header cache: $(Xt_HeaderCachePath)" Importance="High"/>
+    <Exec Command="&quot;$(Xt_InstGen_Path)&quot; filt &quot;@(Xt_AllHeaders)&quot; &quot;$(Xt_HeaderCachePath)&quot;" />
+  </Target>
+  
+  <Target Name="Xt_Headers_Read" BeforeTargets="XT_Inst_Gen">
+    <ReadLinesFromFile File="$(Xt_HeaderCachePath)"> <Output TaskParameter="Lines" ItemName="Xt_Headers"/> </ReadLinesFromFile>
+    <Message Text="read headers: @(Xt_Headers)" Importance="High"/>
+  </Target>
+
+  <Target Name="XT_Inst_Gen" BeforeTargets="ClCompile;CudaBuild" Inputs="@(Xt_Headers)" Outputs="@(Xt_Headers->'$(Xt_InstFilePath)%(Filename)$(Xt_InstSuffix)')">
+    <!--
+      Add temporary ClCompile/Link items in order to read default metadata that's defined in
+      ItemDefinitionGroup, then remove the items.
+    -->
+    <PropertyGroup>
+      <Xt_CompileName>{$([System.Guid]::NewGuid())}</Xt_CompileName>
+    </PropertyGroup>
+  
+    <ItemGroup>
+      <ClCompile Include="$(Xt_CompileName)" />
+      <Xt_CompDef Include="@(ClCompile->WithMetadataValue('Identity', '$(Xt_CompileName)'))" />
+      <ClCompile Remove="$(Xt_CompileName)" />
+    </ItemGroup>
+    
+    <PropertyGroup>
+      <Xt_PreprocessorDefinitions>%(Xt_CompDef.PreprocessorDefinitions)</Xt_PreprocessorDefinitions>
+      <Xt_AdditionalIncludeDirectories>%(Xt_CompDef.AdditionalIncludeDirectories)</Xt_AdditionalIncludeDirectories>
+    </PropertyGroup>
+    
+    <Message Text="Generating: &quot;$(Xt_InstFilePath)%(Xt_Headers.Filename)$(Xt_InstSuffix)&quot; from &quot;%(Xt_Headers.FullPath)&quot; using xt_inst_gen" />
+    <Exec Command="&quot;$(Xt_InstGen_Path)&quot; comp &quot;%(Xt_Headers.FullPath)&quot; &quot;$(Xt_ClangPath)&quot; &quot;$(Xt_InstFilePath)%(Xt_Headers.Filename)$(Xt_InstSuffix)&quot; &quot;$(Xt_PreprocessorDefinitions)&quot; &quot;$(Xt_AdditionalIncludeDirectories)&quot; &quot;$(ProjectGuid)&quot;" />
+  </Target>
+<!-- !-->
+
+<!--
+  <PropertyGroup>
+    <CleanDependsOn> XT_BeforeClean; $(CleanDependsOn); </CleanDependsOn>
+  </PropertyGroup>
+  <Target Name="XT_BeforeClean">
+    <Message Text="XT_BeforeClean target executed"/>
+    <Delete Files="@(Xt_InstFiles)"/>
+    <Delete Files="$(Xt_HeaderCachePath);$(Xt_ProjectListFile)"/>
+  </Target>
+!-->
+  
+  <UsingTask TaskName="Xt_Build_Instances" TaskFactory="CodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.v12.0.dll" >
+    <ParameterGroup>
+      <CurrentProject ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <LinkToolCommand ParameterType="System.String" Required="true" />
+      <ProjectListFile ParameterType="System.String" Required="true" />
+      <SolutionDir ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <!-- for the CL and Link tasks !-->
+      <Reference Include="$(VCTargetsPath)Microsoft.Build.CppTasks.Common.dll"/>
+      <!-- for the MSBuild task !-->
+      <Reference Include="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll"/>
+      <!-- for ProjectCollections / walking the project tree !-->
+      <Reference Include="System.Xml" />
+      <Reference Include="Microsoft.Build" />
+    
+      <Code Type="Class" Language="cs" Source="$(Xt_TargetsPath)Xt_Build_Instances.cs" />
+    </Task>
+  </UsingTask>
+  
+  <!-- run this if the build fails, but only if BuildCompile succeeded, i.e if the link failed !-->
+  <Target Name="Xt_RunOnError" DependsOnTargets="BuildCompile">
+    <ItemGroup>
+      <!-- TODO: 
+        $(SolutionDir)\**\*.xti might include things not needed for this project.
+        That could be slower but should still work as long as you don't have identically named exported symbols in difference projects.
+        What we really need here are all the xt files from the all the projects that this project references (directly/indirectly).
+      !-->
+      <Xt_AllReferencedInstFiles Include="$(SolutionDir)\**\*$(Xt_InstSuffix)" />
+    </ItemGroup>
+  
+    <Message Text="there were link errors - generating template instantiations if necessary" Importance="High"/>
+    <Xt_Build_Instances ProjectListFile="$(Xt_ProjectListFile)" CurrentProject="@(Xt_CurrentProject)" SolutionDir="$(SolutionDir)"
+        LinkToolCommand="&quot;$(Xt_InstGen_Path)&quot; link &quot;$(TargetPath)&quot; &quot;$(Xt_BuildLogPath)&quot; &quot;@(Xt_AllReferencedInstFiles)&quot; &quot;$(Xt_ProjectListFile)&quot;" />
+    <Message Text="build finished" Importance="High" />
+  </Target>
+
+  <!-- todo: what if there are two build customizations used by the same project that both override Build ? !-->
+  <Target Name="Build"
+    Condition="'$(_InvalidConfigurationWarning)' != 'true'"
+    DependsOnTargets="$(BuildDependsOn)"
+    Returns="$(TargetPath)">
+    <OnError ExecuteTargets="Xt_RunOnError" Condition="'$(Xt_Iteration)' == ''" />
+  </Target>
+
+</Project>
