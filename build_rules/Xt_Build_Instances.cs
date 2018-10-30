@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Collections;
 using Microsoft.Build.Utilities;
 using Microsoft.Build.Tasks;
 using Microsoft.Build.Framework;
@@ -7,19 +9,27 @@ using System.Collections.Generic;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Exceptions;
 
+using Microsoft.Build.Construction;
+
 public class Xt_Build_Instances : Task
 {
 	[Required] public String ProjectListFile { get; set; }
 	[Required] public String LinkToolCommand { get; set; }
 	[Required] public ITaskItem[] CurrentProject {get; set; }
-	[Required] public String SolutionDir { get; set; }
+	[Required] public String SolutionFilePath { get; set; }
 	
 	class Node {
 		public Project project = null;
-		public List<Node> references = null;
-		public List<Node> referenced_by = null;
+		// the project's references are linked into the project's target
+		public List<Node> references = new List<Node>();
+		public List<Node> referenced_by = new List<Node>();
+		// dependencies are not linked into but may be used by the project
+		// e.g DLLs loaded at run-time
+		public List<Node> dependencies = new List<Node>();
+		public List<Node> dependency_of = new List<Node>();
 		public bool visited = false;
 		public bool is_changed = false;
+		public bool is_referenced = false;
 	};
 	
 	Dictionary<string, Node> guid_to_node = new Dictionary<string, Node>();
@@ -28,10 +38,11 @@ public class Xt_Build_Instances : Task
 	Node root = null;
 	
 	Exec link_tool = null;
-	MSBuild build = null;	
-	MSBuild build_compile = null;
+	MSBuild build = null;
 	
-	bool EnqueuePath(String path, Node parent = null)
+	SolutionFile solution_file = null;
+	
+	bool EnqueuePath(String path, Node parent, bool is_reference)
 	{
 		try {
 			Project p = project_collection.LoadProject(path);
@@ -39,18 +50,23 @@ public class Xt_Build_Instances : Task
 			Node node = null;
 			if(!guid_to_node.TryGetValue(guid, out node)) {
 				node = new Node {
-					project = p,
-					references = new List<Node>(),
-					referenced_by = new List<Node>()
+					project = p
 				};
 				guid_to_node[guid] = node;
 				node_queue.Enqueue(node);
 			}
 			if(parent != null) {
-				node.referenced_by.Add(parent);
-				parent.references.Add(node);
+				if(is_reference) {
+					node.referenced_by.Add(parent);
+					parent.references.Add(node);
+					node.is_referenced |= parent.is_referenced;
+				} else {
+					node.dependency_of.Add(parent);
+					parent.dependencies.Add(node);
+				}
 			} else {
 				root = node;
+				node.is_referenced = true;
 			}
 			return true;
 		} catch( InvalidProjectFileException ex ) {
@@ -61,28 +77,44 @@ public class Xt_Build_Instances : Task
 	
 	private void WalkProjectDependencies()
 	{
+		solution_file = SolutionFile.Parse(SolutionFilePath); // throws
+		
 		// by default the projects are loaded without reference to a particular solution
 		// but if e.g an <Import .. /> references something relative to $(SolutionDir)
 		// then the project will fail to load without explicitly setting that property here
 		project_collection = new ProjectCollection( new Dictionary<String, String> {
-			{ "SolutionDir", SolutionDir }
+			{ "SolutionDir", Path.GetDirectoryName(SolutionFilePath) }
 		});
 	
 		string my_path = CurrentProject[0].GetMetadata("FullPath");
 		
-		EnqueuePath(my_path);
+		EnqueuePath(path: my_path, parent: null, is_reference: true);
 		
 		while(node_queue.Count > 0) {
 			Node node = node_queue.Dequeue();
 			Project project = node.project;
-			//Log.LogMessage(MessageImportance.High, "found project " + path);
+			Log.LogMessage(MessageImportance.High, "processing project " + project.FullPath);
 
-			//var references = project.Items.Where(item => item.ItemType == "ProjectReference");
 			foreach(ProjectItem reference in project.GetItems("ProjectReference")) {
-				//if(reference.ItemType != "ProjectReference") continue;
 				string path = reference.GetMetadataValue("FullPath");
-				Log.LogMessage(MessageImportance.High, "found referenced project " + path);
-				EnqueuePath(path, node);
+				EnqueuePath(path: path, parent: node, is_reference: true);
+			}
+			
+			// find project dependencies that are not necessarily referenced by the current project
+			// e.g if the project depends on a dynamically loaded DLL
+			ProjectInSolution project_in_sol = null;
+			if(!solution_file.ProjectsByGuid.TryGetValue(project.GetPropertyValue("ProjectGuid"), out project_in_sol)) {
+				Log.LogMessage(MessageImportance.High, "could not find project " + project.FullPath + " in solution");
+				continue;
+			}
+			
+			foreach(string dependency_guid in project_in_sol.Dependencies) {
+				ProjectInSolution dependency = null;
+				if(!solution_file.ProjectsByGuid.TryGetValue(dependency_guid, out dependency)) {
+					Log.LogMessage(MessageImportance.High, "could not find dependency " + dependency_guid + " for project " + project.FullPath + " in solution");
+					continue;
+				}
+				EnqueuePath(path: dependency.AbsolutePath, parent: node, is_reference: false);
 			}
 		}
 	}
@@ -109,42 +141,9 @@ public class Xt_Build_Instances : Task
 		return nodes;
 	}
 	
-	List<Node> GetNodesToBuild(List<Node> nodes)
-	{
-		// every project that depends on the changed projects needs to be built
-		// mark nodes that need to be built as visited
-		for(int i = 0; i < nodes.Count; ++i) {
-			nodes[i].visited = true;
-		}
-		for(int i = 0; i < nodes.Count; ++i) {
-			var child_node = nodes[i];
-			foreach(Node parent_node in child_node.referenced_by) {
-				if(parent_node.visited) continue;
-				nodes.Add(parent_node);
-				parent_node.visited = true;
-			}
-		}
-		
-		// all of a projects's dependencies need to be built before the project
-		// do a topological sort of the nodes and clean up the visited states
-		nodes.Clear();
-		nodes.Add(root);
-		for(int i = 0; i < nodes.Count; ++i) {
-			var parent_node = nodes[i];
-			foreach(Node child_node in parent_node.references) {
-				if(!child_node.visited) continue;
-				nodes.Add(child_node);
-				child_node.visited = false;
-			}
-		}
-		nodes.Reverse();
-		return nodes;
-	}
-	
 	void Init()
 	{
 		WalkProjectDependencies();
-		//return false;
 		
 		link_tool = new Exec {
 			BuildEngine = this.BuildEngine,
@@ -154,62 +153,69 @@ public class Xt_Build_Instances : Task
 		build = new MSBuild {
 			BuildEngine = this.BuildEngine
 		};
-		
-		build_compile = new MSBuild {
-			BuildEngine = this.BuildEngine,
-			Targets = new String[] { "BuildCompile" }
-		};
 	}
 	
-	bool BuildCompile()
+	ITaskItem[] GetItemsToBuild()
 	{
-		// note: if there was a way to get the MSBuild task to recursively build
-		// dependencies then we might not need to do it manually
+		// to allow projects to inject template instantiations into
+		// dependencies that are not linked to it (e.g DLLs)
+		// we need to find the minimum set of projects to build that
+		// recursively covers the whole reference/dependency tree
 		
-		List<Node> changed_nodes = GetChangedNodes();
-		if(changed_nodes == null || changed_nodes.Count == 0) {
-			Log.LogMessage(MessageImportance.High, "no nodes changed, exiting xt loop");
-			return false;
-		}
+		// build the root project and any dependencies that are not also referenced by the root
+		// todo: in principle there could be two such non-root-referenced dependencies A and B
+		// such that A references B and then of the two we would only need to build A
 		
-		// todo: build leaves in parallel
-		List<Node> nodes_to_build = GetNodesToBuild(changed_nodes);
-		foreach(Node node in nodes_to_build) {
-			Project project = node.project;
-			if(node == root) {
-				// for the root project compile and link need to be done separately
-				// because a compile error is fatal while a link error is not
-				if(root.is_changed) {
-					Log.LogMessage(MessageImportance.High, "compiling project " + project.FullPath);
-					build_compile.Projects = CurrentProject;
-					if(!build_compile.Execute()) {
-						Log.LogMessage(MessageImportance.High, "compile failed, exiting xt loop");
-						return false;
-					}
-				}
-			} else {
-				Log.LogMessage(MessageImportance.High, "building project " + project.FullPath);
-				build.Projects = new ITaskItem[] { new TaskItem(project.FullPath) };
-				if(!build.Execute()) {
-					Log.LogMessage(MessageImportance.High, "build failed, exiting xt loop");
-					return false;
-				}
+		List<Node> nodes_to_build = new List<Node>();
+		nodes_to_build.Add(root);
+		
+		List<Node> nodes = new List<Node>();
+		nodes.Add(root);
+		root.visited = true;
+		
+		for(int i = 0; i < nodes.Count; ++i) {
+			var parent_node = nodes[i];
+			foreach(Node child_node in parent_node.references) {
+				if(child_node.visited) continue;
+				child_node.visited = true;
+				nodes.Add(child_node);
 			}
-			node.is_changed = false; // cleanup for next iteration
+			foreach(Node child_node in parent_node.dependencies) {
+				if(child_node.visited) continue;
+				child_node.visited = true;
+				if(!child_node.is_referenced)
+					nodes_to_build.Add(child_node);
+			}
 		}
-		return true;
+		
+		List<ITaskItem> items_to_build = new List<ITaskItem>();
+		foreach(Node node in nodes_to_build) {
+			Log.LogMessage(MessageImportance.High, "need to build " + node.project.FullPath);
+			items_to_build.Add(new TaskItem(node.project.FullPath));
+		}
+		
+		return items_to_build.ToArray();
 	}
 	
-	bool BuildLink()
+	bool Build(ITaskItem[] items_to_build)
 	{
 		Log.LogMessage(MessageImportance.High, "building project " + root.project.FullPath);
-		build.Projects = CurrentProject;
+		build.Projects = items_to_build;
 		return build.Execute();
 	}
-
+	
 	public override bool Execute()
 	{
 		Init();
+		
+		ITaskItem[] items_to_build = GetItemsToBuild();
+		
+		// the following properties need to be set in order to have the build tasks
+		// automatically build the project references recursively 
+		Stack<String> properties = new Stack<String>();
+		properties.Push("BuildingInsideVisualStudio=false");
+		properties.Push("BuildProjectReferences=true");
+		properties.Push(""); // to be replaced later
 		
 		int max_iter = 10;
 		for(int iter = 1; iter <= max_iter; ++iter) {
@@ -221,12 +227,11 @@ public class Xt_Build_Instances : Task
 			
 			// in order to be able to build the same projects more than once
 			// they need to be created with unique dummy properties
-			build_compile.Properties = build.Properties = new String [] { "Xt_Iteration=" + iter };
-
-			if(!BuildCompile())
-				return false;
+			properties.Pop();
+			properties.Push("Xt_Iteration=" + iter);
+			build.Properties = properties.ToArray();
 			
-			if(BuildLink())
+			if(Build(items_to_build))
 				return true;
 		}
 		

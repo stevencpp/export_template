@@ -28,20 +28,10 @@ struct header_checker
 	}
 };
 
-struct CompareString
-{
-	using is_transparent = void;
-	using S = const std::string &;
-	using SV = std::string_view;
-	bool operator()(S a, S b) const { return a < b; }
-	bool operator()(SV a, S b) const { return a < b; }
-	bool operator()(S a, SV b) const { return a < b; }
-};
-
-std::set<std::string, CompareString> get_cached_headers(std::string_view header_cache_file_path) {
-	std::set<std::string, CompareString> headers;
+auto get_cached_headers(std::string_view header_cache_file_path) {
+	std::set<std::string, std::less<>> headers;
 	std::ifstream f { header_cache_file_path };
-	if (!f) return {};
+	if (!f) return headers;
 	std::string line;
 	while (std::getline(f, line)) {
 		headers.emplace(line);

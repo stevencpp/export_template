@@ -121,17 +121,12 @@ struct xt_inst_file
 {
 	std::string contents;
 	// views into the contents:
-	string_range header_path { 0, 0 }; // workaround
 	string_range impl_project { 0, 0 };
 	std::vector<string_range> exported_symbols;
 	std::vector<string_range> instantiated_symbols;
 
 	auto get_impl_project() {
 		return impl_project.get(contents);
-	}
-
-	auto get_header_path() {
-		return header_path.get(contents);
 	}
 
 	// return a range of string_view_refs
@@ -160,25 +155,25 @@ struct xt_inst_file
 		return { pos, str.size() };
 	}
 
+	static constexpr std::string_view
+		project_prefix = "// proj ",
+		export_prefix = "// exp ",
+		instantiation_prefix = "template ";
+
 	void append_impl_project(std::string_view project) {
 		impl_project =
-			append_enclosed_string("// ", project, "\n");
-	}
-
-	void append_header_path(std::string_view path) {
-		header_path =
-			append_enclosed_string("// ", path, "\n");
+			append_enclosed_string(project_prefix, project, "\n");
 	}
 
 	void append_exported_symbol(std::string_view symbol) {
 		exported_symbols.emplace_back( 
-			append_enclosed_string("// ", symbol, "\n")
+			append_enclosed_string(export_prefix, symbol, "\n")
 		);
 	}
 
 	void append_instantiated_symbol(std::string_view symbol) {
 		instantiated_symbols.emplace_back(
-			append_enclosed_string("template ", symbol, ";\n")
+			append_enclosed_string(instantiation_prefix, symbol, ";\n")
 		);
 	}
 };
@@ -207,10 +202,6 @@ struct xt_inst_file_reader_writer
 		ret.exported_symbols.reserve(nr_lines);
 		ret.instantiated_symbols.reserve(nr_lines);
 
-		std::string_view comment_prefix = "// ";
-		std::string_view instantiation_prefix = "template ";
-
-		int count = 0;
 		auto it = ret.contents.begin();
 		while (it != ret.contents.end()) {
 			auto it_end = std::find(it, ret.contents.end(), '\n');
@@ -218,19 +209,19 @@ struct xt_inst_file_reader_writer
 			if (!line.empty() && line.back() == '\r')
 				line.remove_suffix(1);
 
-			if (string_starts_with(line, comment_prefix)) {
-				line.remove_prefix(comment_prefix.size());
-				if (count == 0) {
-					ret.header_path.set_view(ret.contents, line);
-					count++;
-				} else if(count == 1) {
-					ret.impl_project.set_view(ret.contents, line);
-					count++;
-				} else {
-					ret.exported_symbols.emplace_back(ret.contents, line);
+			auto check_and_remove = [&](std::string_view prefix) {
+				if (string_starts_with(line, prefix)) {
+					line.remove_prefix(prefix.size());
+					return true;
 				}
-			} else if (string_starts_with(line, instantiation_prefix)) {
-				line.remove_prefix(instantiation_prefix.size());
+				return false;
+			};
+
+			if (check_and_remove(xt_inst_file::project_prefix)) {
+				ret.impl_project.set_view(ret.contents, line);
+			} else if (check_and_remove(xt_inst_file::export_prefix)) {
+				ret.exported_symbols.emplace_back(ret.contents, line);
+			} else if (check_and_remove(xt_inst_file::instantiation_prefix)) {
 				line.remove_suffix(1); // for the ; at the end
 				ret.instantiated_symbols.emplace_back(ret.contents, line);
 			} else {

@@ -32,7 +32,6 @@ namespace fs = std::filesystem;
 struct unresolved_name_matcher
 {
 	pcrecpp::RE re;
-	std::string  type, dummy_cdecl;
 
 	std::string get_pattern() {
 		// e.g Aa1::B_3s<f::g<int, float>::h<char, i<int,int>::j>::val>::f::g<int, float>::h __cdecl asdf(int, int);
@@ -43,7 +42,7 @@ struct unresolved_name_matcher
 		// word template? ( :: word template? )*
 		std::string pattern = word_tpo + "(?:" "::" + word_tpo + ")*";
 		// two match groups for the type and name
-		return "(" + pattern + ") __cdecl (" + pattern + ")";
+		return "__cdecl (" + pattern + ")";
 	}
 
 	unresolved_name_matcher() : re { get_pattern() } {
@@ -51,7 +50,7 @@ struct unresolved_name_matcher
 	}
 
 	bool get_name(const std::string& symbol, std::string & name) {
-		if (!re.PartialMatch(symbol, &type, &name)) {//, &dummy_cdecl, &name)) {
+		if (!re.PartialMatch(symbol, &name)) {//, &dummy_cdecl, &name)) {
 			fmt::print("failed to parse symbol: {}\n", symbol);
 			return false;
 		}
@@ -79,7 +78,7 @@ void string_search_erase_whole(std::string &a, const std::string_view & b) {
 	}
 }
 
-std::optional< std::vector<std::string> > get_unresolved_symbols(std::string_view log_file, std::string_view target_file)
+std::optional< std::vector<std::string> > get_unresolved_symbols(std::string_view log_file, std::string_view project_name)
 {
 	std::vector<std::string> unresolved_symbols;
 
@@ -101,8 +100,11 @@ C:\src\...\ModuleTest.exe : warning LNK4088: image being generated due to /FORCE
 	}
 	auto & log_contents = log_contents_opt.value();
 
-	std::string needle = "Creating library " + fs::path { target_file }.replace_extension("lib").string();
-	// just in case this appears more than once in the log
+	// linking might need to be done multiple times during the build
+	// (either for the same project, iteratively, or for DLL dependencies)
+	// our custom target runs before every link and prints this
+	// to make it easy to find the unresolved symbols from only the last link
+	std::string needle = str_cat("linking project ", project_name);
 	// do a reverse search here with rbegin/rend
 	auto rev_it = std::search(log_contents.rbegin(), log_contents.rend(),
 		std::boyer_moore_searcher(needle.rbegin(), needle.rend()));
@@ -111,7 +113,6 @@ C:\src\...\ModuleTest.exe : warning LNK4088: image being generated due to /FORCE
 		return {};
 	}
 	auto it = rev_it.base();
-	it += needle.size();
 
 	// find the unresolved symbols
 	needle = "error LNK2019: unresolved external symbol \"";
@@ -132,7 +133,7 @@ C:\src\...\ModuleTest.exe : warning LNK4088: image being generated due to /FORCE
 }
 
 int print_link_usage() {
-	fmt::print("usage: {} link target_file log_file inst_files project_list_file\n", tool_name);
+	fmt::print("usage: {} link project_name log_file inst_files project_list_file\n", tool_name);
 	return 1;
 }
 
@@ -141,16 +142,14 @@ int do_link(int argc, const char *argv[]) {
 		return print_link_usage();
 	}
 
-	auto target_file = argv[1];
+	auto project_name = argv[1];
 	auto log_file = argv[2];
 	auto inst_files = argv[3];
 	auto project_list_file = argv[4];
-	fmt::print("target: {}\nlog: {}\ninst files: {}\nproj list file: {}\n", 
-		target_file, log_file, inst_files, project_list_file);
-
-	//fs::copy_file(log_file, "log.txt");
+	fmt::print("project: {}\nlog: {}\ninst files: {}\nproj list file: {}\n", 
+		project_name, log_file, inst_files, project_list_file);
 	
-	auto unresolved_symbols_opt = get_unresolved_symbols(log_file, target_file);
+	auto unresolved_symbols_opt = get_unresolved_symbols(log_file, project_name);
 	if (!unresolved_symbols_opt) {
 		return 1; // failed to parse the log
 	}
@@ -206,18 +205,8 @@ int do_link(int argc, const char *argv[]) {
 				});
 				if (got_one) {
 					// write all of the new instantiations to the .xti file
+					// this should trigger a recompile for all of the implementation files
 					inst_file_rw.append_diff(inst_file);
-					// ^ this should trigger a recompile for all of the implementation files
-					// except VS has a bug where it sometimes doesn't notice that .cu files changed
-					// https://devtalk.nvidia.com/default/topic/1029759/visual-studio-2017-not-detecting-changes-in-cuda-cu-files/
-					// so as a workaround: if there exists a .cu file with the same name as the
-					// interface header, at the same path, then touch it to force it to recompile 
-					std::error_code err;
-					fs::last_write_time(
-						fs::path { inst_file.get_header_path() }.replace_extension(".cu"),
-						fs::file_time_type::clock::now(),
-						err
-					);
 
 					projects_to_build.emplace(inst_file.get_impl_project());
 				}

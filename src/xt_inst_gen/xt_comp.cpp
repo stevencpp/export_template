@@ -248,14 +248,6 @@ int do_comp(int argc, const char *argv[]) {
 		// then if the link tool appends the template instantiations to the .xti files,
 		// the implemenation files that include the .xti should get rebuilt next time
 
-		// but there is a bug in msbuild: https://devtalk.nvidia.com/default/topic/1029759/visual-studio-2017-not-detecting-changes-in-cuda-cu-files/
-		// and to work around that the linker also needs to know the path to the
-		// implementation file so that it can touch it and force it to build.
-		// normally the interface / implementation files could be at different paths
-		// but as a simple workaoround just pass the header file path and assume that
-		// the implementation file is right next to the header
-		xti.append_header_path(header_path);
-
 		// the post-link build rules don't compile specific files,
 		// (note: there can be more than one implementation file for a particular header)
 		// they just build the projects which contain files that changed
