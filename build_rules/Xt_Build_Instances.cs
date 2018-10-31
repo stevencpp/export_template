@@ -199,7 +199,7 @@ public class Xt_Build_Instances : Task
 	
 	bool Build(ITaskItem[] items_to_build)
 	{
-		Log.LogMessage(MessageImportance.High, "building project " + root.project.FullPath);
+		Log.LogMessage(MessageImportance.High, "building projects");
 		build.Projects = items_to_build;
 		return build.Execute();
 	}

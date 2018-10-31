@@ -147,11 +147,11 @@ namespace xt
 
 	};
 
-template<typename... S>
-std::string str_cat(S&&... ss) {
-	std::string ret;
-	ret.reserve((... + std::string_view { ss }.size()) + 1);
-	(...,ret.append(ss));
-	return ret;
-}
+	template<typename... Ss>
+	std::string str_cat(Ss&&... ss) {
+		std::string ret;
+		ret.reserve((std::string_view { ss }.size() + ... + 1));
+		(...,ret.append(ss));
+		return ret;
+	}
 }

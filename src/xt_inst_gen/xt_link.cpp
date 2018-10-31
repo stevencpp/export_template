@@ -50,7 +50,7 @@ struct unresolved_name_matcher
 	}
 
 	bool get_name(const std::string& symbol, std::string & name) {
-		if (!re.PartialMatch(symbol, &name)) {//, &dummy_cdecl, &name)) {
+		if (!re.PartialMatch(symbol, &name)) {
 			fmt::print("failed to parse symbol: {}\n", symbol);
 			return false;
 		}
@@ -115,7 +115,8 @@ C:\src\...\ModuleTest.exe : warning LNK4088: image being generated due to /FORCE
 	auto it = rev_it.base();
 
 	// find the unresolved symbols
-	needle = "error LNK2019: unresolved external symbol \"";
+	// note: in Debug the error is LNK2019, in Release the error is LNK2001
+	needle = ": unresolved external symbol \"";
 	std::boyer_moore_searcher searcher(needle.begin(), needle.end());
 	while ((it = std::search(it, log_contents.end(), searcher)) != log_contents.end())
 	{
