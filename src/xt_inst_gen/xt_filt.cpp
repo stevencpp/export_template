@@ -65,6 +65,15 @@ int do_filt(int argc, const char *argv[])
 
 	header_checker checker;
 
+	// todo: The following logic doesn't work for headers in the input list that 
+	// existed but did not appear in the input list last time the cache file was written,
+	// (so header.last_modified < cache.last_modified).
+	// To support projects that include headers outside of the project file's path
+	// currently the input list contains headers from ClInclude,ClCompile,CudaCompile,
+	// so if you first create the header, run this tool, then include it in the project
+	// then running the tool again won't recognize the new header.
+	// A possible solution would be to save the input list to a file, then check it next time.
+
 	for (auto header : split_string_to_views(header_list, ';')) {
 		// if the header changed then we need to check again
 		// otherwise it should still be an xt header if it was previously found to be

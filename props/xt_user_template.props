@@ -12,12 +12,12 @@
   </PropertyGroup>
   <!-- settings for projects that use the tool and the custom build rules !-->
   <PropertyGroup Label="UserMacros">
-	<!-- clang binary path, must not have a trailing slash !-->
+	<!-- clang binary path !-->
     <Xt_ClangPath    >c:\Program Files\LLVM\bin</Xt_ClangPath>
 	<!-- full path to the xt_inst_gen.exe tool !-->
-    <Xt_InstGen_Path >c:\...\xt_inst_gen.exe</Xt_InstGen_Path>
+    <Xt_InstGen_Path >c:\Program Files\export_template\bin\xt_inst_gen.exe</Xt_InstGen_Path>
 	<!-- location of xt_inst_gen.target and the .cs files it depends on (with a trailing slash) !-->
-    <Xt_TargetsPath  >$(SolutionDir)build_rules\</Xt_TargetsPath>
+    <Xt_TargetsPath  >c:\Program Files\export_template\etc\</Xt_TargetsPath>
 	<!-- extension used for the generated template instantiation files !-->
     <Xt_InstSuffix   >.xti</Xt_InstSuffix>
 	<!-- path where the generated files will be placed (with a trailing slash) !-->

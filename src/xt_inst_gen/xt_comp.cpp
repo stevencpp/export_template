@@ -60,20 +60,6 @@ std::string get_return_type(const cppast::cpp_function_base & func) {
 	throw std::runtime_error("unsupported function type");
 }
 
-bool add_to_path(const char *new_dir)
-{
-	char *path_var = nullptr;
-	size_t sz = 0;
-	errno_t err = _dupenv_s(&path_var, &sz, "PATH");
-	if (err) {
-		if (path_var) free(path_var);
-		return false;
-	}
-	int ret = _putenv(fmt::format("PATH={};{}", path_var, new_dir).c_str());
-	if (path_var) free(path_var);
-	return ret == 0;
-}
-
 std::string get_signature(const cppast::cpp_function_base & func) {
 	// add the full signature (parameter types, and function cv/ref qualifiers)
 	// todo: the parameter types are not fully namespace qualified
@@ -137,7 +123,7 @@ int find_exported_templates(
 				fmt::print(err_fmt, parser.error() ? "unspecified parser error" : "parser did not return a file");
 				return {};
 			}
-			return std::move(ret);
+			return ret;
 		} catch (cppast::libclang_error err) {
 			fmt::print(err_fmt, err.what());
 			return {};
@@ -196,33 +182,27 @@ int find_exported_templates(
 }
 
 int print_comp_usage() {
-	fmt::print("usage: {} comp clang_path xt_file_path xt_inst_file_path "
+	fmt::print("usage: {} comp xt_file_path xt_inst_file_path "
 		"preprocessor_definitions include_directories impl_project_name\n", tool_name);
 	return 1;
 }
 
 int do_comp(int argc, const char *argv[]) {
-	if (argc < 7) {
+	if (argc < 6) {
 		return print_comp_usage();
 	}
 
 	auto header_path = argv[1];
-	auto clang_path = argv[2];
-	auto xt_inst_file_path = argv[3];
+	auto xt_inst_file_path = argv[2];
 
 	fmt::print("xt_inst_gen for '{}' in '{}'\n", header_path, xt_inst_file_path);
-	fmt::print("preprocessor definitions: {}\n", argv[4]);
-	fmt::print("include directories: {}\n", argv[5]);
+	fmt::print("preprocessor definitions: {}\n", argv[3]);
+	fmt::print("include directories: {}\n", argv[4]);
 
-	std::vector<std::string_view> pp_defs = split_string_to_views(argv[4], ';');
-	std::vector<std::string_view> include_dirs = split_string_to_views(argv[5], ';');
+	std::vector<std::string_view> pp_defs = split_string_to_views(argv[3], ';');
+	std::vector<std::string_view> include_dirs = split_string_to_views(argv[4], ';');
 
-	auto impl_project = argv[6];
-
-	if (!add_to_path(clang_path)) {
-		fmt::print("failed to add clang path to env\n");
-		return 1;
-	}
+	auto impl_project = argv[5];
 
 	// first ensure that the path to the .xti exists
 	if (std::error_code err;
