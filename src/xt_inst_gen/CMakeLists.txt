@@ -67,6 +67,7 @@ if(WIN32)
 	install(FILES 
 		../../build_rules/xt_inst_gen.targets
 		../../build_rules/Xt_Build_Instances.cs
+		../../build_rules/cuda_workaround.targets
 		DESTINATION etc
 	)
 	

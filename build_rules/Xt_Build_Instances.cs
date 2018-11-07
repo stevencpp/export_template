@@ -11,6 +11,8 @@ using Microsoft.Build.Exceptions;
 
 using Microsoft.Build.Construction;
 
+using System.Linq;
+
 public class Xt_Build_Instances : Task
 {
 	[Required] public String ProjectListFile { get; set; }
@@ -70,12 +72,12 @@ public class Xt_Build_Instances : Task
 			}
 			return true;
 		} catch( InvalidProjectFileException ex ) {
-			Log.LogMessage(MessageImportance.High, "failed to load project " + path + " because " + ex.Message);
+			Log.LogMessage(MessageImportance.High, "failed to load project {0} because {1}", path, ex.Message);
 		}
 		return false;
 	}
 	
-	private void WalkProjectDependencies()
+	private bool WalkProjectDependencies()
 	{
 		solution_file = SolutionFile.Parse(SolutionFilePath); // throws
 		
@@ -83,7 +85,7 @@ public class Xt_Build_Instances : Task
 		// but if e.g an <Import .. /> references something relative to $(SolutionDir)
 		// then the project will fail to load without explicitly setting that property here
 		project_collection = new ProjectCollection( new Dictionary<String, String> {
-			{ "SolutionDir", Path.GetDirectoryName(SolutionFilePath) }
+			{ "SolutionDir", Path.GetDirectoryName(SolutionFilePath) + "\\" }
 		});
 	
 		string my_path = CurrentProject[0].GetMetadata("FullPath");
@@ -93,7 +95,7 @@ public class Xt_Build_Instances : Task
 		while(node_queue.Count > 0) {
 			Node node = node_queue.Dequeue();
 			Project project = node.project;
-			Log.LogMessage(MessageImportance.High, "processing project " + project.FullPath);
+			Log.LogMessage(MessageImportance.High, "processing project {0}", project.FullPath);
 
 			foreach(ProjectItem reference in project.GetItems("ProjectReference")) {
 				string path = reference.GetMetadataValue("FullPath");
@@ -104,19 +106,20 @@ public class Xt_Build_Instances : Task
 			// e.g if the project depends on a dynamically loaded DLL
 			ProjectInSolution project_in_sol = null;
 			if(!solution_file.ProjectsByGuid.TryGetValue(project.GetPropertyValue("ProjectGuid"), out project_in_sol)) {
-				Log.LogMessage(MessageImportance.High, "could not find project " + project.FullPath + " in solution");
+				Log.LogMessage(MessageImportance.High, "could not find project {0} in solution", project.FullPath);
 				continue;
 			}
 			
 			foreach(string dependency_guid in project_in_sol.Dependencies) {
 				ProjectInSolution dependency = null;
 				if(!solution_file.ProjectsByGuid.TryGetValue(dependency_guid, out dependency)) {
-					Log.LogMessage(MessageImportance.High, "could not find dependency " + dependency_guid + " for project " + project.FullPath + " in solution");
+					Log.LogMessage(MessageImportance.High, "could not find dependency {0} for project {1} in solution", dependency_guid, project.FullPath);
 					continue;
 				}
 				EnqueuePath(path: dependency.AbsolutePath, parent: node, is_reference: false);
 			}
 		}
+		return true;
 	}
 	
 	List<Node> GetChangedNodes()
@@ -130,29 +133,76 @@ public class Xt_Build_Instances : Task
 		while((guid = file.ReadLine()) != null) {
 			Node node = null;
 			if(!guid_to_node.TryGetValue(guid, out node)) {
-				Log.LogMessage(MessageImportance.High, "could not find project for " + guid);
+				Log.LogMessage(MessageImportance.High, "could not find project for {0}", guid);
 				return null;
 			}
 			nodes.Add(node);
 			node.is_changed = true;
 			//Project project = node.project;
-			//Log.LogMessage(MessageImportance.High, "Found project " + project.FullPath + " for " + guid);
+			//Log.LogMessage(MessageImportance.High, "Found project {0} for {1}", project.FullPath, guid);
 		}
 		return nodes;
 	}
 	
-	void Init()
+	List<string> FindInstFiles() {
+		try {
+			bool files_missing = false;
+			List<string> inst_files = new List<string>();
+			foreach(Node node in guid_to_node.Values) {
+				string[] props = {"Xt_InstFilePath", "Xt_HeaderCachePath", "Xt_InstSuffix"};
+				string[] values = props.Select(prop => node.project.GetPropertyValue(prop)).ToArray();
+				if(values.Any(value => value == "")) continue;
+				//for(int i = 0; i < props.Length; i++)
+					//Log.LogMessage(MessageImportance.High, "{0} = {1}", props[i], values[i]);
+				string inst_base_path = values[0], header_cache_path = values[1], inst_suffix = values[2];
+				string header_path;
+				System.IO.StreamReader file =  new System.IO.StreamReader(header_cache_path);
+				while((header_path = file.ReadLine()) != null) {
+					string header_name = System.IO.Path.GetFileNameWithoutExtension(header_path);
+					string xti_path = inst_base_path + header_name + inst_suffix;
+					//Log.LogMessage(MessageImportance.High, "xti_path = {0}", xti_path);
+					if(!File.Exists(xti_path)) {
+						Log.LogMessage(MessageImportance.High, "error: xti file does not exist: {0}", xti_path);
+						files_missing = true;
+					}
+					inst_files.Add(xti_path);
+				}
+			}
+			return files_missing ? null : inst_files;
+		} catch (Exception e) {
+			Log.LogMessage(MessageImportance.High, "FindInstFiles failed because: {0}", e.ToString());
+			return null;
+		}
+	}
+	
+	bool Init()
 	{
-		WalkProjectDependencies();
+		if(!WalkProjectDependencies())
+			return false;
+		
+		List<string> inst_files = FindInstFiles();
+		if(inst_files == null)
+			return false;
+		
+		string command = LinkToolCommand + " \"" + String.Join(";", inst_files) + "\"";
+		Log.LogMessage(MessageImportance.High, "xt_inst_gen link: {0}", command);
 		
 		link_tool = new Exec {
 			BuildEngine = this.BuildEngine,
-			Command = LinkToolCommand
+			Command = command
 		};
 		
 		build = new MSBuild {
 			BuildEngine = this.BuildEngine
 		};
+		return true;
+	}
+	
+	void ClearVisited()
+	{
+		foreach(Node node in guid_to_node.Values) {
+			node.visited = false;
+		}
 	}
 	
 	ITaskItem[] GetItemsToBuild()
@@ -190,9 +240,11 @@ public class Xt_Build_Instances : Task
 		
 		List<ITaskItem> items_to_build = new List<ITaskItem>();
 		foreach(Node node in nodes_to_build) {
-			Log.LogMessage(MessageImportance.High, "need to build " + node.project.FullPath);
+			Log.LogMessage(MessageImportance.High, "need to build {0}", node.project.FullPath);
 			items_to_build.Add(new TaskItem(node.project.FullPath));
 		}
+		
+		ClearVisited();
 		
 		return items_to_build.ToArray();
 	}
@@ -206,7 +258,8 @@ public class Xt_Build_Instances : Task
 	
 	public override bool Execute()
 	{
-		Init();
+		if(!Init())
+			return false;
 		
 		ITaskItem[] items_to_build = GetItemsToBuild();
 		

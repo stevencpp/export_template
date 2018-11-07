@@ -29,12 +29,12 @@ namespace xt {
 namespace fs = std::filesystem;
 
 // add the namespace(s),class(es) and the function name
-std::string get_fully_qualified_name(const cppast::cpp_entity & e) {
-	// todo: doesn't work if the parents are class templates, duplicate names
+std::string get_fully_qualified_name_without_templates(const cppast::cpp_entity & e) {
 	type_safe::optional_ref<const cppast::cpp_entity> current { e };
 	std::vector<std::string> containers;
 	while (current && current.value().kind() != cppast::cpp_file::kind()) {
-		containers.emplace_back(current.value().name());
+		if(!cppast::is_template(current.value().kind()))
+			containers.emplace_back(current.value().name());
 		current = current.value().parent();
 	}
 	std::reverse(containers.begin(), containers.end());
@@ -145,7 +145,7 @@ int find_exported_templates(
 			cppast::has_attribute(e, "export_template"))
 		{
 			auto& func_template = static_cast<const cppast::cpp_function_template&>(e);
-			//auto& func = func_template.function();
+			auto& func = func_template.function();
 
 		#if 0
 			std::string full_name =
@@ -153,7 +153,7 @@ int find_exported_templates(
 				get_fully_qualified_name(func_template) +
 				get_signature(func);
 		#else
-			std::string full_name = get_fully_qualified_name(func_template);
+			std::string full_name = get_fully_qualified_name_without_templates(func);
 		#endif
 
 			fmt::print("function template: {}\n", full_name);
@@ -165,9 +165,9 @@ int find_exported_templates(
 			cppast::has_attribute(e, "export_template"))
 		{
 			auto& class_template = static_cast<const cppast::cpp_class_template&>(e);
-			//auto& class_ = class_template.class_();
+			auto& class_ = class_template.class_();
 
-			std::string full_name = get_fully_qualified_name(class_template);
+			std::string full_name = get_fully_qualified_name_without_templates(class_);
 
 			fmt::print("class template: {}\n", full_name);
 
@@ -195,9 +195,11 @@ int do_comp(int argc, const char *argv[]) {
 	auto header_path = argv[1];
 	auto xt_inst_file_path = argv[2];
 
+#if 0
 	fmt::print("xt_inst_gen for '{}' in '{}'\n", header_path, xt_inst_file_path);
 	fmt::print("preprocessor definitions: {}\n", argv[3]);
 	fmt::print("include directories: {}\n", argv[4]);
+#endif
 
 	std::vector<std::string_view> pp_defs = split_string_to_views(argv[3], ';');
 	std::vector<std::string_view> include_dirs = split_string_to_views(argv[4], ';');

@@ -31,26 +31,33 @@ namespace fs = std::filesystem;
 
 struct unresolved_name_matcher
 {
-	pcrecpp::RE re;
+	pcrecpp::RE re_template;
+	pcrecpp::RE re_name;
 
-	std::string get_pattern() {
-		// e.g Aa1::B_3s<f::g<int, float>::h<char, i<int,int>::j>::val>::f::g<int, float>::h __cdecl asdf(int, int);
-		// should match: type, name, arg1, arg2
-		//R""(\w+(?:<(?:.|(?R))*>)?(?:::\w+(?:<(?:.|(?R))*>)?)*)"";
-		std::string tpo = R""((?:<(?:.|(?R))*>)?)""; // optional recursive template pattern
-		std::string word_tpo = "\\w+" + tpo;
+	std::string get_template_pattern() {
+		return R""((?:<(?:[^<>]|(?R))*>))""; // recursive template pattern
+	}
+
+	std::string get_name_pattern() {
+		std::string word = "\\w+";
 		// word template? ( :: word template? )*
-		std::string pattern = word_tpo + "(?:" "::" + word_tpo + ")*";
+		std::string pattern = word + "(?:" "::" + word + ")*";
 		// two match groups for the type and name
 		return "__cdecl (" + pattern + ")";
 	}
 
-	unresolved_name_matcher() : re { get_pattern() } {
-
+	unresolved_name_matcher() : 
+		re_template { get_template_pattern() },
+		re_name { get_name_pattern() } 
+	{
 	}
 
 	bool get_name(const std::string& symbol, std::string & name) {
-		if (!re.PartialMatch(symbol, &name)) {
+		//e.g Aa1::B_3s<f::g<int, float>::h<char, i<int,int>::j>::val>::f::g<int, float>::h
+		//should become Aa1::B_3s::f::g::h
+		std::string without_templates = symbol;
+		if(!re_template.GlobalReplace("", &without_templates) ||
+			!re_name.PartialMatch(without_templates, &name)) {
 			fmt::print("failed to parse symbol: {}\n", symbol);
 			return false;
 		}
@@ -134,7 +141,7 @@ C:\src\...\ModuleTest.exe : warning LNK4088: image being generated due to /FORCE
 }
 
 int print_link_usage() {
-	fmt::print("usage: {} link project_name log_file inst_files project_list_file\n", tool_name);
+	fmt::print("usage: {} link project_name log_file project_list_file inst_files\n", tool_name);
 	return 1;
 }
 
@@ -145,10 +152,12 @@ int do_link(int argc, const char *argv[]) {
 
 	auto project_name = argv[1];
 	auto log_file = argv[2];
-	auto inst_files = argv[3];
-	auto project_list_file = argv[4];
+	auto project_list_file = argv[3];
+	auto inst_files = argv[4];
+#if 0
 	fmt::print("project: {}\nlog: {}\ninst files: {}\nproj list file: {}\n", 
 		project_name, log_file, inst_files, project_list_file);
+#endif
 	
 	auto unresolved_symbols_opt = get_unresolved_symbols(log_file, project_name);
 	if (!unresolved_symbols_opt) {
@@ -187,8 +196,9 @@ int do_link(int argc, const char *argv[]) {
 						// the explicit instantiation should not contain these
 						// keywords that MSVC shows as part of the symbol:
 						string_search_erase_whole(p.symbol, "public: ");
+						string_search_erase_whole(p.symbol, "private: ");
 						string_search_erase_whole(p.symbol, "static ");
-						 
+
 						// normally if the symbol is unresolved then it shouldn't be instantiated in the .xti file
 						// but it can be missing if the build system didn't rebuild the implementation file
 						// todo: what if the symbol instantiation is there but rendered slightly differently ?

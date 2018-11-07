@@ -35,16 +35,19 @@ set(XT_INST_SUFFIX ".xti" CACHE STRING
 set(XT_INST_FILE_PATH "$(SolutionDir)intermediate/src/$(ProjectName)" CACHE STRING
 	"path where the generated files will be placed (uses VS macros)")
 
-function(target_export_template target)
-	set_target_properties(${target} PROPERTIES 
-		VS_GLOBAL_Xt_ClangPath ${XT_CLANG_PATH}
-		VS_GLOBAL_Xt_InstGen_Path ${XT_INSTGEN_BINARY}
-		VS_GLOBAL_Xt_TargetsPath ${XT_TARGETS_PATH}/
-		VS_GLOBAL_Xt_InstSuffix ${XT_INST_SUFFIX}
-		VS_GLOBAL_Xt_InstFilePath ${XT_INST_FILE_PATH}/
-	)
+function(target_export_template targets)
+	foreach(target ${ARGV})
+		set_target_properties(${target} PROPERTIES 
+			VS_GLOBAL_Xt_ClangPath ${XT_CLANG_PATH}
+			VS_GLOBAL_Xt_InstGen_Path ${XT_INSTGEN_BINARY}
+			VS_GLOBAL_Xt_TargetsPath ${XT_TARGETS_PATH}/
+			VS_GLOBAL_Xt_InstSuffix ${XT_INST_SUFFIX}
+			VS_GLOBAL_Xt_InstFilePath ${XT_INST_FILE_PATH}/
+		)
 
-	target_link_libraries(${target}
-		${XT_TARGETS_PATH}/xt_inst_gen.targets
-	)
+		target_link_libraries(${target}
+			${XT_TARGETS_PATH}/xt_inst_gen.targets
+			${XT_TARGETS_PATH}/cuda_workaround.targets
+		)
+	endforeach()
 endfunction()

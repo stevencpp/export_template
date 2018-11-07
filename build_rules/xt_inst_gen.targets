@@ -6,15 +6,21 @@
     <Xt_InstSuffix      Condition="'$(Xt_InstSuffix)'     ==''" >.xti</Xt_InstSuffix>
     <Xt_InstFilePath    Condition="'$(Xt_InstFilePath)'   ==''" >$(SolutionDir)intermediate\src\$(ProjectName)\</Xt_InstFilePath>
     <Xt_InstGen_Path    Condition="'$(Xt_InstGen_Path)'   ==''" >xt_inst_gen.exe</Xt_InstGen_Path>
-    <Xt_HeaderCachePath Condition="'$(Xt_HeaderCachePath)'==''" >$(IntDir)xt_header_cache.txt</Xt_HeaderCachePath>
-    <Xt_ProjectListFile Condition="'$(Xt_ProjectListFile)'==''" >$(IntDir)xt_project_list.txt</Xt_ProjectListFile>
-    <Xt_BuildLogPath    Condition="'$(Xt_BuildLogPath)'   ==''" >$(IntDir)$(MSBuildProjectName).log</Xt_BuildLogPath>
+    <Xt_IntDir_FullPath>$(MSBuildProjectDirectory)\$(IntDir)</Xt_IntDir_FullPath>
+    <Xt_IntDir_FullPath Condition="$([System.IO.Path]::IsPathRooted('$(IntDir)'))">$(IntDir)</Xt_IntDir_FullPath>
+    <Xt_HeaderCachePath Condition="'$(Xt_HeaderCachePath)'==''" >$(Xt_IntDir_FullPath)xt_header_cache.txt</Xt_HeaderCachePath>
+    <Xt_ProjectListFile Condition="'$(Xt_ProjectListFile)'==''" >$(Xt_IntDir_FullPath)xt_project_list.txt</Xt_ProjectListFile>
+    <Xt_BuildLogPath    Condition="'$(Xt_BuildLogPath)'   ==''" >$(Xt_IntDir_FullPath)$(MSBuildProjectName).log</Xt_BuildLogPath>
   </PropertyGroup>
   
   <ItemDefinitionGroup>
     <ClCompile>
       <AdditionalIncludeDirectories>$(Xt_InstFilePath);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <!-- note: the following is only necessary if the CUDA.targets is loaded after this .targets file !-->
+    <CudaCompile>
+      <Include>$(Xt_InstFilePath);%(Include)</Include>
+    </CudaCompile>
   </ItemDefinitionGroup>
   
 <!-- !-->
@@ -23,23 +29,39 @@
   </ItemGroup>
 
   <PropertyGroup>
+    <!-- the tool needs libclang.dll and clang++.exe to be in PATH !-->
     <Xt_Command>set PATH=%PATH%;$(Xt_ClangPath); &amp;&amp; "$(Xt_InstGen_Path)"</Xt_Command>
+    <!-- the XT_Inst_Gen target uses the following to get the ClCompile settings !-->
+    <Xt_CompileName>{$([System.Guid]::NewGuid())}</Xt_CompileName>
   </PropertyGroup>
   
   <Target Name="XT_Header_PreFilter" BeforeTargets="XT_Header_Filter">
     <ItemGroup>
-	  <Xt_AllHeaders Include="@(ClInclude)" />
+      <!-- We can't just get all header files in the project directory because
+           e.g CMake may generate the project file at a different location !-->
+      <Xt_AllHeaders Include="@(ClInclude)" />
+      <!-- In order to support having both the interface and implementation in a single file,
+           we should also check if compiled source files with a .h/.cuh extension use [[export_template]] !-->
       <Xt_AllHeaders Include="@(ClCompile);@(CudaCompile)" Condition="$([System.String]::new('%(Extension)').EndsWith('h'))" />
     </ItemGroup>
     <Message Text="all headers: @(Xt_AllHeaders)" Importance="Low"/>
   </Target>
   
+  <!-- When any header changes, grep it for [[export_template]] and cache the filtered header list !-->
   <Target Name="XT_Header_Filter" BeforeTargets="Xt_Headers_Read" Inputs="@(Xt_AllHeaders)" Outputs="$(Xt_HeaderCachePath)">
     <Message Text="generating header cache: $(Xt_HeaderCachePath)" Importance="High"/>
-    <Exec Command="$(Xt_Command) filt &quot;@(Xt_AllHeaders)&quot; &quot;$(Xt_HeaderCachePath)&quot;" />
+    <PropertyGroup>
+      <Xt_Command_Filt>$(Xt_Command) filt "@(Xt_AllHeaders)" "$(Xt_HeaderCachePath)"</Xt_Command_Filt>
+    </PropertyGroup>
+    <Message Text="xt_inst_gen filt: $(Xt_Command_Filt)" Importance="High"/>
+    <Exec Command="$(Xt_Command_Filt)" />
   </Target>
   
   <Target Name="Xt_Headers_Read" BeforeTargets="XT_Inst_Gen">
+    <!-- the XT_Header_Filter doesn't create a cache file if there are no headers in the project,
+	     but the Xt_Build_Instances assumes that a missing cache file is an error,
+		 so create it if it doesn't already exist !-->
+    <WriteLinesToFile File="$(Xt_HeaderCachePath)" Overwrite="false" />
     <ReadLinesFromFile File="$(Xt_HeaderCachePath)"> <Output TaskParameter="Lines" ItemName="Xt_Headers"/> </ReadLinesFromFile>
     <Message Text="read headers: @(Xt_Headers)" Importance="High"/>
   </Target>
@@ -51,10 +73,6 @@
       Add temporary ClCompile/Link items in order to read default metadata that's defined in
       ItemDefinitionGroup, then remove the items.
     -->
-    <PropertyGroup>
-      <Xt_CompileName>{$([System.Guid]::NewGuid())}</Xt_CompileName>
-    </PropertyGroup>
-  
     <ItemGroup>
       <ClCompile Include="$(Xt_CompileName)" />
       <Xt_CompDef Include="@(ClCompile->WithMetadataValue('Identity', '$(Xt_CompileName)'))" />
@@ -66,8 +84,14 @@
       <Xt_AdditionalIncludeDirectories>%(Xt_CompDef.AdditionalIncludeDirectories)</Xt_AdditionalIncludeDirectories>
     </PropertyGroup>
     
-    <Message Text="Generating: &quot;$(Xt_InstFilePath)%(Xt_Headers.Filename)$(Xt_InstSuffix)&quot; from &quot;%(Xt_Headers.FullPath)&quot; using xt_inst_gen" />
-    <Exec Command="$(Xt_Command) comp &quot;%(Xt_Headers.FullPath)&quot; &quot;$(Xt_InstFilePath)%(Xt_Headers.Filename)$(Xt_InstSuffix)&quot; &quot;$(Xt_PreprocessorDefinitions)&quot; &quot;$(Xt_AdditionalIncludeDirectories)&quot; &quot;$(ProjectGuid)&quot;" />
+    <ItemGroup>
+      <Xt_Comp_Set Include="@(Xt_Headers)">
+        <Command>$(Xt_Command) comp "%(FullPath)" "$(Xt_InstFilePath)%(Filename)$(Xt_InstSuffix)" "$(Xt_PreprocessorDefinitions)" "$(Xt_AdditionalIncludeDirectories)" "$(ProjectGuid)"</Command>
+      </Xt_Comp_Set>
+    </ItemGroup>
+    
+    <Message Text="@(Xt_Comp_Set->'xt_inst_gen comp: %(Command)','%0a')" Importance="High"/>
+    <Exec Command="%(Xt_Comp_Set.Command)" />
   </Target>
   
 <!-- Assume that rebuilding doesn't change the set of template instantiations
@@ -108,18 +132,15 @@
   
   <!-- run this if the build fails, but only if BuildCompile succeeded, i.e if the link failed !-->
   <Target Name="Xt_RunOnError" DependsOnTargets="BuildCompile">
-    <ItemGroup>
-      <!-- TODO: 
-        $(SolutionDir)\**\*.xti might include things not needed for this project.
-        That could be slower but should still work as long as you don't have identically named exported symbols in difference projects.
-        What we really need here are all the xt files from the all the projects that this project references (directly/indirectly).
-      !-->
-      <Xt_AllReferencedInstFiles Include="$(SolutionDir)\**\*$(Xt_InstSuffix)" />
-    </ItemGroup>
+    <PropertyGroup>
+      <!-- the command does not include the last parameter, the list of referenced xti files,
+           that will be added by the Xt_Build_Instances task !-->
+      <Xt_Command_Link>$(Xt_Command) link "$(ProjectName)" "$(Xt_BuildLogPath)" "$(Xt_ProjectListFile)"</Xt_Command_Link>
+    </PropertyGroup>
   
     <Message Text="there were link errors - generating template instantiations if necessary" Importance="High"/>
     <Xt_Build_Instances ProjectListFile="$(Xt_ProjectListFile)" CurrentProject="@(Xt_CurrentProject)" SolutionFilePath="$(SolutionPath)"
-        LinkToolCommand="$(Xt_Command) link &quot;$(ProjectName)&quot; &quot;$(Xt_BuildLogPath)&quot; &quot;@(Xt_AllReferencedInstFiles)&quot; &quot;$(Xt_ProjectListFile)&quot;" />
+      LinkToolCommand="$(Xt_Command_Link)" />
     <Message Text="build finished" Importance="High" />
   </Target>
 
