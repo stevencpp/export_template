@@ -148,6 +148,8 @@ public class Xt_Build_Instances : Task
 		try {
 			bool files_missing = false;
 			List<string> inst_files = new List<string>();
+			// by construction guid_to_node should only contain projects that
+			// the root project references or depends on transitively
 			foreach(Node node in guid_to_node.Values) {
 				string[] props = {"Xt_InstFilePath", "Xt_HeaderCachePath", "Xt_InstSuffix"};
 				string[] values = props.Select(prop => node.project.GetPropertyValue(prop)).ToArray();
