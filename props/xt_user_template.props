@@ -4,24 +4,25 @@
   <!-- settings for building the xt_inst_gen tool !-->
   <PropertyGroup Label="UserMacros">
     <!-- clang library path !-->
-	<Xt_ClangLibPath >c:\Program Files\LLVM\lib</Xt_ClangLibPath>
-	<!-- path to the cppast repository with a trailing slash (looks for \include, \external) !-->
-	<Xt_cppast_Path>c:\...\cppast\</Xt_cppast_Path>
-	<!-- cppast build path (with a trailing slash) !-->
-	<Xt_cppast_BuildPath>c:\...\cppast\bin\</Xt_cppast_BuildPath>
+    <Xt_ClangLibPath >c:\Program Files\LLVM\lib</Xt_ClangLibPath>
+    <!-- path to the cppast repository with a trailing slash (looks for \include, \external) !-->
+    <Xt_cppast_Path>c:\...\cppast\</Xt_cppast_Path>
+    <!-- cppast build path (with a trailing slash) !-->
+    <Xt_cppast_BuildPath>c:\...\cppast\bin\</Xt_cppast_BuildPath>
   </PropertyGroup>
   <!-- settings for projects that use the tool and the custom build rules !-->
   <PropertyGroup Label="UserMacros">
-	<!-- clang binary path !-->
+    <!-- clang binary path !-->
     <Xt_ClangPath    >c:\Program Files\LLVM\bin</Xt_ClangPath>
-	<!-- full path to the xt_inst_gen.exe tool !-->
+    <!-- full path to the xt_inst_gen.exe tool !-->
     <Xt_InstGen_Path >c:\Program Files\export_template\bin\xt_inst_gen.exe</Xt_InstGen_Path>
-	<!-- location of xt_inst_gen.target and the .cs files it depends on (with a trailing slash) !-->
+    <!-- location of xt_inst_gen.target and the .cs files it depends on (with a trailing slash) !-->
     <Xt_TargetsPath  >c:\Program Files\export_template\etc\</Xt_TargetsPath>
-	<!-- extension used for the generated template instantiation files !-->
+    <!-- extension used for the generated template instantiation files !-->
     <Xt_InstSuffix   >.xti</Xt_InstSuffix>
-	<!-- path where the generated files will be placed (with a trailing slash) !-->
+    <!-- path where the generated files will be placed (with a trailing slash) !-->
     <Xt_InstFilePath >$(SolutionDir)intermediate\src\$(ProjectName)\</Xt_InstFilePath>
+    <Xt_InstFilePath_FromHeader>false</Xt_InstFilePath_FromHeader>
   </PropertyGroup>
   <PropertyGroup />
   <ItemDefinitionGroup />

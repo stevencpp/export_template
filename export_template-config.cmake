@@ -34,6 +34,13 @@ set(XT_INST_SUFFIX ".xti" CACHE STRING
 
 set(XT_INST_FILE_PATH "$(SolutionDir)intermediate/src/$(ProjectName)" CACHE STRING
 	"path where the generated files will be placed (uses VS macros)")
+	
+option(XT_INST_FILE_FROM_HEADER "place the generated files next to the headers" OFF)
+if(XT_INST_FILE_FROM_HEADER)
+	set(XT_INST_FILE_FROM_HEADER_VAL "true")
+else()
+	set(XT_INST_FILE_FROM_HEADER_VAL "false")
+endif()
 
 function(target_export_template targets)
 	foreach(target ${ARGV})
@@ -43,6 +50,7 @@ function(target_export_template targets)
 			VS_GLOBAL_Xt_TargetsPath ${XT_TARGETS_PATH}/
 			VS_GLOBAL_Xt_InstSuffix ${XT_INST_SUFFIX}
 			VS_GLOBAL_Xt_InstFilePath ${XT_INST_FILE_PATH}/
+			VS_GLOBAL_Xt_InstFilePath_FromHeader ${XT_INST_FILE_FROM_HEADER_VAL}
 		)
 
 		target_link_libraries(${target}

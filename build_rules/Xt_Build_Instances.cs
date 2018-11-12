@@ -19,6 +19,8 @@ public class Xt_Build_Instances : Task
 	[Required] public String LinkToolCommand { get; set; }
 	[Required] public ITaskItem[] CurrentProject {get; set; }
 	[Required] public String SolutionFilePath { get; set; }
+	[Required] public String Configuration { get; set; }
+	[Required] public String Platform { get; set; }
 	
 	class Node {
 		public Project project = null;
@@ -81,11 +83,13 @@ public class Xt_Build_Instances : Task
 	{
 		solution_file = SolutionFile.Parse(SolutionFilePath); // throws
 		
-		// by default the projects are loaded without reference to a particular solution
+		// By default the projects are loaded without reference to a particular solution
 		// but if e.g an <Import .. /> references something relative to $(SolutionDir)
-		// then the project will fail to load without explicitly setting that property here
+		// then the project will fail to load without explicitly setting that property here.
+		// The properties read from the projects may also depend on Configuration and Platform.
 		project_collection = new ProjectCollection( new Dictionary<String, String> {
-			{ "SolutionDir", Path.GetDirectoryName(SolutionFilePath) + "\\" }
+			{ "SolutionDir", Path.GetDirectoryName(SolutionFilePath) + "\\" },
+			{ "Configuration", Configuration }, { "Platform", Platform }
 		});
 	
 		string my_path = CurrentProject[0].GetMetadata("FullPath");
@@ -122,6 +126,7 @@ public class Xt_Build_Instances : Task
 		return true;
 	}
 	
+	// note: this is currently unused
 	List<Node> GetChangedNodes()
 	{
 		// the link tool writes to a file which contains
@@ -129,7 +134,7 @@ public class Xt_Build_Instances : Task
 		// look up nodes corresponding to changed projects in the dependency graph
 		var nodes = new List<Node>();
 		string guid;
-		System.IO.StreamReader file =  new System.IO.StreamReader(ProjectListFile);
+		StreamReader file =  new StreamReader(ProjectListFile);
 		while((guid = file.ReadLine()) != null) {
 			Node node = null;
 			if(!guid_to_node.TryGetValue(guid, out node)) {
@@ -141,6 +146,7 @@ public class Xt_Build_Instances : Task
 			//Project project = node.project;
 			//Log.LogMessage(MessageImportance.High, "Found project {0} for {1}", project.FullPath, guid);
 		}
+		file.Dispose();
 		return nodes;
 	}
 	
@@ -151,17 +157,19 @@ public class Xt_Build_Instances : Task
 			// by construction guid_to_node should only contain projects that
 			// the root project references or depends on transitively
 			foreach(Node node in guid_to_node.Values) {
-				string[] props = {"Xt_InstFilePath", "Xt_HeaderCachePath", "Xt_InstSuffix"};
+				string[] props = {"Xt_InstFilePath_FromHeader", "Xt_InstFilePath", "Xt_HeaderCachePath", "Xt_InstSuffix"};
 				string[] values = props.Select(prop => node.project.GetPropertyValue(prop)).ToArray();
 				if(values.Any(value => value == "")) continue;
 				//for(int i = 0; i < props.Length; i++)
 					//Log.LogMessage(MessageImportance.High, "{0} = {1}", props[i], values[i]);
-				string inst_base_path = values[0], header_cache_path = values[1], inst_suffix = values[2];
+				bool xti_from_header = Convert.ToBoolean(values[0]);
+				string inst_base_path = values[1], header_cache_path = values[2], inst_suffix = values[3];
 				string header_path;
-				System.IO.StreamReader file =  new System.IO.StreamReader(header_cache_path);
+				StreamReader file =  new StreamReader(header_cache_path);
 				while((header_path = file.ReadLine()) != null) {
-					string header_name = System.IO.Path.GetFileNameWithoutExtension(header_path);
-					string xti_path = inst_base_path + header_name + inst_suffix;
+					string xti_path = !xti_from_header ?
+						(inst_base_path + Path.GetFileNameWithoutExtension(header_path) + inst_suffix)
+						: Path.ChangeExtension(header_path, inst_suffix);
 					//Log.LogMessage(MessageImportance.High, "xti_path = {0}", xti_path);
 					if(!File.Exists(xti_path)) {
 						Log.LogMessage(MessageImportance.High, "error: xti file does not exist: {0}", xti_path);
@@ -169,6 +177,9 @@ public class Xt_Build_Instances : Task
 					}
 					inst_files.Add(xti_path);
 				}
+				// Xt_Headers_Read may touch this file right after we're done
+				// so make sure the file gets closed first
+				file.Dispose();
 			}
 			return files_missing ? null : inst_files;
 		} catch (Exception e) {
@@ -179,12 +190,16 @@ public class Xt_Build_Instances : Task
 	
 	bool Init()
 	{
-		if(!WalkProjectDependencies())
+		if(!WalkProjectDependencies()) {
+			Log.LogMessage(MessageImportance.High, "failed to walk dependencies");
 			return false;
+		}
 		
 		List<string> inst_files = FindInstFiles();
-		if(inst_files == null)
+		if(inst_files == null) {
+			Log.LogMessage(MessageImportance.High, "no inst files found");
 			return false;
+		}
 		
 		string command = LinkToolCommand + " \"" + String.Join(";", inst_files) + "\"";
 		Log.LogMessage(MessageImportance.High, "xt_inst_gen link: {0}", command);

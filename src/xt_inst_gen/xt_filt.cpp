@@ -57,6 +57,7 @@ int do_filt(int argc, const char *argv[])
 	auto cache_last_modified = fs::last_write_time(header_cache_file_path, err);
 	auto cached_headers = get_cached_headers(header_cache_file_path);
 
+	// todo: if the path to the header cache does not exist, create directories ?
 	std::ofstream f { header_cache_file_path };
 	if (!f) {
 		fmt::print("failed to open header cache file '{}'\n", header_cache_file_path);
