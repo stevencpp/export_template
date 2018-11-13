@@ -24,65 +24,128 @@
 #pragma warning(disable:4251)
 #include <pcrecpp.h>
 
-
 namespace xt {
 
 namespace fs = std::filesystem;
 
 struct unresolved_name_matcher
 {
-	pcrecpp::RE re_template;
-	pcrecpp::RE re_name;
-
-	std::string get_template_pattern() {
-		return R""((?:<(?:[^<>]|(?R))*>))""; // recursive template pattern
+	// recursive template pattern
+	static std::string template_pattern(std::string name) {
+		// the named subexpression is used to isolate the recursion
+		// from the rest of the pattern
+		return "(?<" + name + ">(<((?>[^<>]+)|(?&" + name + "))*>))";
 	}
+	pcrecpp::RE re_template { template_pattern("R") };
 
-	std::string get_name_pattern() {
-		std::string word = "\\w+";
-		// word template? ( :: word template? )*
-		std::string pattern = word + "(?:" "::" + word + ")*";
-		// two match groups for the type and name
+	// pattern to find the name of the symbol including templates
+	static std::string name_pattern() {
+		auto name_tpo = [](auto name) { return "\\w+" + template_pattern(name) + "?"; };
+		std::string pattern = name_tpo("R1") +"(?:" "::" + name_tpo("R2") + ")*";
 		return "__cdecl (" + pattern + ")";
 	}
+	pcrecpp::RE re_name { name_pattern() };
 
-	unresolved_name_matcher() : 
-		re_template { get_template_pattern() },
-		re_name { get_name_pattern() } 
-	{
-	}
+	// the explicit instantiation should not contain these
+	// keywords that MSVC shows as part of the symbol:
+	// (only if they appear at the beginning or are preceded by a space)
+	pcrecpp::RE re_inst { R""((?:^| )(public: |static |private: )+)"" };
 
-	bool get_name(const std::string& symbol, std::string & name) {
-		//e.g Aa1::B_3s<f::g<int, float>::h<char, i<int,int>::j>::val>::f::g<int, float>::h
-		//should become Aa1::B_3s::f::g::h
-		std::string without_templates = symbol;
-		if(!re_template.GlobalReplace("", &without_templates) ||
-			!re_name.PartialMatch(without_templates, &name)) {
-			fmt::print("failed to parse symbol: {}\n", symbol);
-			return false;
+	struct name_symbol_pair {
+		std::string name, symbol, to_inst;
+		bool operator ==(const name_symbol_pair & p) const {
+			return name == p.name && symbol == p.symbol && to_inst == p.to_inst;
 		}
-		return true;
+		void print() {
+			fmt::print("[\n\t{}\n\t{}\n\t{}\n]", symbol, name, to_inst);
+		}
+	};
+
+	std::optional<name_symbol_pair> get_nsp(const std::string & symbol) {
+		std::string name, to_inst;
+		//first just find extract the name including templates from the symbol
+		if (!re_name.PartialMatch(symbol, &name) || name.empty()) {
+			fmt::print("ERROR: failed get name from symbol: {}\n", symbol);
+			return {};
+		}
+
+		// if the name doesn't end with a template then it contains one or more class templates
+		// unless it's an unresolved symbol that is unrelated to exported templates
+		if (name.back() != '>') {
+			std::size_t pos = name.rfind('>');
+			if (pos != std::string::npos) {
+				to_inst = "struct " + name.substr(0, pos + 1);
+			} else {
+				return {}; // not a parse error, just cannot be an exported template
+			}
+		} else {
+			to_inst = symbol;
+			re_inst.GlobalReplace("", &to_inst);
+		}
+
+		if (!re_template.GlobalReplace("", &name)) {
+			fmt::print("ERROR: failed to remove templates from name: {}\n", name);
+			return {};
+		}
+		return name_symbol_pair { std::move(name), symbol, std::move(to_inst) };
 	}
 
-	struct name_symbol_pair { std::string name, symbol; };
-
-	std::list<name_symbol_pair> get_list_from_symbols(const std::vector<std::string> & unresolved_symbols) {
-		std::list<name_symbol_pair> ret;
-		std::string name;
+	std::vector<name_symbol_pair> get_list_from_symbols(const std::vector<std::string> & unresolved_symbols) {
+		std::vector<name_symbol_pair> ret;
 		for (const std::string& unresolved_symbol : unresolved_symbols) {
-			if (get_name(unresolved_symbol, name))
-				ret.push_back({ name, unresolved_symbol });
+			auto nsp_opt = get_nsp(unresolved_symbol);
+			if (!nsp_opt)
+				continue;
+			auto &nsp = nsp_opt.value();
+			// if it's a class template you can have multiple unresolved members of it
+			// but the class template instantiation should only be added once
+			if (ret.end() != std::find_if(ret.begin(), ret.end(), [&](auto &p) { return p.to_inst == nsp.to_inst; }))
+				continue;
+			ret.emplace_back(std::move(nsp));
 		}
 		return ret;
 	}
 };
 
-// remove b from a if b is in a, as long as b is at the beginning of a or preceded by a space
-void string_search_erase_whole(std::string &a, const std::string_view & b) {
-	auto it = std::search(a.begin(), a.end(), b.begin(), b.end());
-	if (it != a.end() && (it == a.begin() || *(it-1) == ' ')) {
-		a.erase(it, it + b.size());
+int test_link()
+{
+	unresolved_name_matcher matcher;
+
+	std::vector<std::string> symbols;
+	std::vector<unresolved_name_matcher::name_symbol_pair> expected_nsps;
+	auto add = [&](const char * symbol, const char *name, const char *to_inst) {
+		symbols.emplace_back(symbol);
+		expected_nsps.push_back({ name, symbol, to_inst });
+	};
+
+	add("private: class D1::D1<char>::D11<int *> * __cdecl D1::D1<char>::D11<int *>::foo<&void __cdecl D::dummy(char const &) > (class D1::D1<char>::D11<int *> *)",
+		"D1::D1::D11::foo", "class D1::D1<char>::D11<int *> * __cdecl D1::D1<char>::D11<int *>::foo<&void __cdecl D::dummy(char const &) > (class D1::D1<char>::D11<int *> *)");
+	add("public: static void __cdecl B::B::foo<bool>(void)",
+		"B::B::foo", "void __cdecl B::B::foo<bool>(void)");
+	add("void __cdecl Aa1::B_3s<f::g<int, float>::h<char, i<int,int>::j>::val>::f::g<int, float>::h(void)",
+		"Aa1::B_3s::f::g::h", "struct Aa1::B_3s<f::g<int, float>::h<char, i<int,int>::j>::val>::f::g<int, float>");
+	add("public: static void __cdecl C::C<char>::foo(void)",
+		"C::C::foo", "struct C::C<char>");
+	add("public: static void __cdecl D::D<char &>::d_foo<int *>(void)",
+		"D::D::d_foo", "void __cdecl D::D<char &>::d_foo<int *>(void)");
+
+	auto nsps = matcher.get_list_from_symbols(symbols);
+
+	if (nsps != expected_nsps) {
+		for (std::size_t i = 0; i < std::min(nsps.size(), expected_nsps.size()); ++i) {
+			auto &nsp = nsps[i], &nsp_exp = expected_nsps[i];
+			if (!(nsp == nsp_exp)) {
+				fmt::print("expected "); nsp_exp.print();
+				fmt::print(" but got "); nsp.print();
+				fmt::print("\n");
+				matcher.get_nsp(nsp_exp.symbol);
+			}
+		}
+		fmt::print("failed");
+		return 1;
 	}
+
+	return 0;
 }
 
 std::optional< std::vector<std::string> > get_unresolved_symbols(std::string_view log_file, std::string_view project_name)
@@ -146,6 +209,10 @@ int print_link_usage() {
 }
 
 int do_link(int argc, const char *argv[]) {
+	// todo: use a proper test framework
+	if (argc == 2 && strcmp(argv[1], "test") == 0)
+		return test_link();
+
 	if (argc < 5) {
 		return print_link_usage();
 	}
@@ -189,26 +256,18 @@ int do_link(int argc, const char *argv[]) {
 
 			for (auto exported_symbol : inst_file.get_exported_symbols()) {
 				bool got_one = false;
-				remaining_unresolved_names.remove_if([&](auto & p) {
-					// todo: if it's a class template, you can have multiple unresolved members of it
-					// but the class template should only be added once
+				remove_if_and_erase(remaining_unresolved_names, [&](auto & p) {
 					if (string_starts_with(p.name, exported_symbol.get())) {
-						// the explicit instantiation should not contain these
-						// keywords that MSVC shows as part of the symbol:
-						string_search_erase_whole(p.symbol, "public: ");
-						string_search_erase_whole(p.symbol, "private: ");
-						string_search_erase_whole(p.symbol, "static ");
-
 						// normally if the symbol is unresolved then it shouldn't be instantiated in the .xti file
 						// but it can be missing if the build system didn't rebuild the implementation file
 						// todo: what if the symbol instantiation is there but rendered slightly differently ?
-						if (inst_file.get_instantiated_symbols().contains(p.symbol)) {
-							fmt::print("ERROR: symbol '{}' already instantiated in '{}'\n", p.symbol, inst_file_path);
+						if (inst_file.get_instantiated_symbols().contains(p.to_inst)) {
+							fmt::print("ERROR: symbol '{}' already instantiated in '{}'\n", p.to_inst, inst_file_path);
 							return true;
 						}
 
-						fmt::print("adding explicit instantiation for '{}' to '{}'\n", p.symbol, inst_file_path);
-						inst_file.append_instantiated_symbol(p.symbol);
+						fmt::print("adding explicit instantiation '{}' for '{}' to '{}'\n", p.to_inst, p.symbol, inst_file_path);
+						inst_file.append_instantiated_symbol(p.to_inst);
 						got_one = true;
 						return true;
 					}

@@ -89,7 +89,8 @@ public class Xt_Build_Instances : Task
 		// The properties read from the projects may also depend on Configuration and Platform.
 		project_collection = new ProjectCollection( new Dictionary<String, String> {
 			{ "SolutionDir", Path.GetDirectoryName(SolutionFilePath) + "\\" },
-			{ "Configuration", Configuration }, { "Platform", Platform }
+			{ "Configuration", Configuration }, { "Platform", Platform },
+			{ "SolutionPath", SolutionFilePath } // just for completeness
 		});
 	
 		string my_path = CurrentProject[0].GetMetadata("FullPath");

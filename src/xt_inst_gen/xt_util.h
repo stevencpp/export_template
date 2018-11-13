@@ -154,4 +154,12 @@ namespace xt
 		(...,ret.append(ss));
 		return ret;
 	}
+
+	template<typename C, typename P>
+	void remove_if_and_erase(C & container, P&& pred) {
+		container.erase(
+			std::remove_if(container.begin(), container.end(), std::forward<P>(pred)),
+			container.end()
+		);
+	}
 }
