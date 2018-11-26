@@ -27,6 +27,7 @@ target_link_libraries(xt_inst_gen
 	PRIVATE cppast
 	PRIVATE fmt::fmt
 	PRIVATE $<IF:$<CONFIG:Debug>,${PCRE_LIBRARY_DEBUG},${PCRE_LIBRARY_RELEASE}>
+	PRIVATE llvm_demangle
 )
 
 install(TARGETS xt_inst_gen

@@ -18,7 +18,7 @@ namespace xt
 	}
 
 	// returns list of non-empty components delimited by 'delim'
-	static std::vector<std::string_view> split_string_to_views(std::string_view str, const char delim) {
+	inline static std::vector<std::string_view> split_string_to_views(std::string_view str, const char delim) {
 		std::vector<std::string_view> ret;
 		ret.reserve(std::count(str.begin(), str.end(), delim) + 1);
 		auto it_from = str.begin();
@@ -32,7 +32,7 @@ namespace xt
 		return ret;
 	}
 
-	static std::vector<std::string> split_string(std::string_view str, const char delim) {
+	inline static std::vector<std::string> split_string(std::string_view str, const char delim) {
 		std::vector<std::string> ret;
 		ret.reserve(std::count(str.begin(), str.end(), delim) + 1);
 		auto it_from = str.begin();
@@ -57,7 +57,7 @@ namespace xt
 		}
 	}
 
-	static std::string get_file_contents(std::fstream & f)
+	inline static std::string get_file_contents(std::fstream & f)
 	{
 		std::string contents;
 		f.seekg(0, std::ios::end);
@@ -67,25 +67,15 @@ namespace xt
 		return contents;
 	}
 
-	static std::optional<std::string> get_file_contents(std::string_view file_name)
+	inline static std::optional<std::string> get_file_contents(std::string_view file_name)
 	{
 		std::fstream in(file_name, std::ios::in | std::ios::binary);
 		if (!in) return {};
 		return get_file_contents(in);
 	}
 
-	static std::string in_quotes(std::string_view s) {
-		std::string ret;
-		ret.reserve(s.size() + 3); // quotes + null terminator
-		ret = '\"';
-		//ret = " \"";
-		ret += s;
-		ret += '\"';
-		return ret;
-	}
-
 	// return true if a starts with b
-	static bool string_starts_with(const std::string_view & a, const std::string_view & b) noexcept {
+	inline static bool string_starts_with(const std::string_view & a, const std::string_view & b) noexcept {
 		if (a.size() < b.size())
 			return false;
 		return std::string_view { &a[0], b.size() } == b;

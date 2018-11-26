@@ -53,7 +53,7 @@ struct string_range
 };
 
 // structure represanting a substring
-// that is no long valid if the referenced string is moved
+// that is no longer valid if the referenced string is moved
 // but remains valid if data is appended to the referenced string
 struct string_view_ref : public string_range
 {

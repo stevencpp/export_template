@@ -1,10 +1,3 @@
-//..fmt/core.h(215): warning : 'result_of<fmt::v5::internal::custom_formatter<char, fmt::v5::basic_format_context<std::back_insert_iterator<fmt::v5::internal::basic_buffer<char> >, char> > (int)>'
-// is deprecated: warning STL4014: std::result_of and std::result_of_t are deprecated in C++17.
-// They are superseded by std::invoke_result and std::invoke_result_t.
-// You can define _SILENCE_CXX17_RESULT_OF_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS
-// to acknowledge that you have received this warning. [-Wdeprecated-declarations]
-#define _SILENCE_CXX17_RESULT_OF_DEPRECATION_WARNING
-
 #include "xt.h"
 #include "xt_util.h"
 #include "xt_inst_file.h"
@@ -15,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <cctype>
 
 #include <fmt/core.h>
 #include <fmt/ostream.h>
@@ -24,84 +18,196 @@
 #pragma warning(disable:4251)
 #include <pcrecpp.h>
 
+#include "llvm\Demangle\MicrosoftDemangle.h"
+
 namespace xt {
 
 namespace fs = std::filesystem;
 
+struct symbol
+{
+	std::string name; // full demangled name of the symbol
+	std::string mangled; // mangled name
+};
+
+struct symbol_to_inst
+{
+	std::string name; // demangled name of the symbol
+	std::string to_match; // fully qualified function/class name without templates
+	std::string to_inst; // code generated for explicit instantiation
+
+	bool operator ==(const symbol_to_inst & p) const {
+		return name == p.name && to_match == p.to_match && to_inst == p.to_inst;
+	}
+	void print() {
+		fmt::print("[\n\t{}\n\t{}\n\t{}\n]", name, to_match, to_inst);
+	}
+};
+
+// copied from MicrosoftDemangleNodes.cpp
+// Writes a space if the last token does not end with a punctuation.
+static void outputSpaceIfNecessary(OutputStream &OS) {
+	if (OS.empty())
+		return;
+
+	char C = OS.back();
+	if (std::isalnum(C) || C == '>')
+		OS << " ";
+}
+
 struct unresolved_name_matcher
 {
-	// recursive template pattern
-	static std::string template_pattern(std::string name) {
-		// the named subexpression is used to isolate the recursion
-		// from the rest of the pattern
-		return "(?<" + name + ">(<((?>[^<>]+)|(?&" + name + "))*>))";
-	}
-	pcrecpp::RE re_template { template_pattern("R") };
-
-	// pattern to find the name of the symbol including templates
-	static std::string name_pattern() {
-		auto name_tpo = [](auto name) { return "\\w+" + template_pattern(name) + "?"; };
-		std::string pattern = name_tpo("R1") +"(?:" "::" + name_tpo("R2") + ")*";
-		return "__cdecl (" + pattern + ")";
-	}
-	pcrecpp::RE re_name { name_pattern() };
-
-	// the explicit instantiation should not contain these
-	// keywords that MSVC shows as part of the symbol:
-	// (only if they appear at the beginning or are preceded by a space)
-	pcrecpp::RE re_inst { R""((?:^| )(public: |static |private: )+)"" };
-
-	struct name_symbol_pair {
-		std::string name, symbol, to_inst;
-		bool operator ==(const name_symbol_pair & p) const {
-			return name == p.name && symbol == p.symbol && to_inst == p.to_inst;
+	struct buf {
+		char * p = nullptr;
+		std::size_t N = 0;
+		bool init_stream(OutputStream &s) {
+			return initializeOutputStream(p, &N, s, 1024);
 		}
-		void print() {
-			fmt::print("[\n\t{}\n\t{}\n\t{}\n]", symbol, name, to_inst);
+		void update(OutputStream &s) {
+			p = s.getBuffer();
+			N = std::max(N, s.getBufferCapacity());
+		}
+		~buf() {
+			if (p) {
+				std::free(p);
+			}
 		}
 	};
 
-	std::optional<name_symbol_pair> get_nsp(const std::string & symbol) {
-		std::string name, to_inst;
-		//first just find extract the name including templates from the symbol
-		if (!re_name.PartialMatch(symbol, &name) || name.empty()) {
-			fmt::print("ERROR: failed get name from symbol: {}\n", symbol);
+	buf to_match_buf, to_inst_buf;
+
+	std::optional<symbol_to_inst> get_inst(const symbol & symbol) {
+		llvm::ms_demangle::Demangler D;
+		StringView Name { symbol.mangled.c_str() };
+		llvm::ms_demangle::SymbolNode *AST = D.parse(Name);
+		if (D.Error) {
+			fmt::print("ERROR: failed to demangle symbol '{}' ({})\n", symbol.mangled, symbol.name);
 			return {};
 		}
+		if (AST->kind() != llvm::ms_demangle::NodeKind::FunctionSymbol) {
+			return {}; // not an error
+		}
+		auto fsn = static_cast<llvm::ms_demangle::FunctionSymbolNode *>(AST);
 
-		// if the name doesn't end with a template then it contains one or more class templates
-		// unless it's an unresolved symbol that is unrelated to exported templates
-		if (name.back() != '>') {
-			std::size_t pos = name.rfind('>');
-			if (pos != std::string::npos) {
-				to_inst = "struct " + name.substr(0, pos + 1);
-			} else {
-				return {}; // not a parse error, just cannot be an exported template
+		int nr_comps = (int)fsn->Name->Components->Count;
+		auto for_each_identifier = [&](auto func) {
+			for (int i = 0; i < nr_comps; ++i) {
+				auto comp = fsn->Name->Components->Nodes[i];
+				auto identifier = static_cast<llvm::ms_demangle::IdentifierNode *>(comp);
+				func(i, identifier);
 			}
-		} else {
-			to_inst = symbol;
-			re_inst.GlobalReplace("", &to_inst);
-		}
+		};
 
-		if (!re_template.GlobalReplace("", &name)) {
-			fmt::print("ERROR: failed to remove templates from name: {}\n", name);
+		int last_template_idx = -1;
+		for_each_identifier([&](int idx, llvm::ms_demangle::IdentifierNode * identifier) {
+			if (identifier->TemplateParams)
+				last_template_idx = idx;
+		});
+		if (last_template_idx < 0)
+			return {}; // not an error, just not a template
+
+		auto OutputFlags = llvm::ms_demangle::OutputFlags::OF_Default;
+		OutputStream to_match_stream, to_inst_stream;
+		if (!to_match_buf.init_stream(to_match_stream) || 
+			!to_inst_buf.init_stream(to_inst_stream)) {
+			fmt::print("ERROR: failed to initialize output streams\n");
 			return {};
 		}
-		return name_symbol_pair { std::move(name), symbol, std::move(to_inst) };
+
+		auto output_without_template = [&](auto id, OutputStream &s) {
+			auto * template_params = id->TemplateParams;
+			id->TemplateParams = nullptr;
+			id->output(s, OutputFlags);
+			id->TemplateParams = template_params;
+		};
+
+		for_each_identifier([&](int idx, llvm::ms_demangle::IdentifierNode * identifier) {
+			auto * id_to_match = identifier;
+			if (identifier->kind() == llvm::ms_demangle::NodeKind::StructorIdentifier) {
+				auto structor = static_cast<llvm::ms_demangle::StructorIdentifierNode *>(identifier);
+				id_to_match = structor->Class;
+			}
+			output_without_template(id_to_match, to_match_stream);
+			if (idx < nr_comps - 1)
+				to_match_stream << "::";
+		});
+		to_match_stream += '\0';
+
+		auto add_ids_to_inst_up_to_idx = [&](int idx_limit_inclusive, bool trailing_colons = false) {
+			for_each_identifier([&](int idx, llvm::ms_demangle::IdentifierNode * identifier) {
+				if (idx <= idx_limit_inclusive) {
+					identifier->output(to_inst_stream, OutputFlags);
+					if (trailing_colons || idx < idx_limit_inclusive)
+						to_inst_stream << "::";
+				}
+			});
+		};
+
+		if (last_template_idx == nr_comps - 1) { // if it's a function template
+			bool add_return_type = true;
+			bool add_name = true;
+
+			auto func_id = fsn->Name->getUnqualifiedIdentifier();
+			if (func_id->kind() == llvm::ms_demangle::NodeKind::ConversionOperatorIdentifier) {
+				add_return_type = false;
+				add_name = false;
+				auto conv = static_cast<llvm::ms_demangle::ConversionOperatorIdentifierNode *>(func_id);
+				add_ids_to_inst_up_to_idx(nr_comps - 2, true);
+				to_inst_stream << "operator ";
+				conv->TargetType->output(to_inst_stream, OutputFlags);
+			}
+
+			if (add_return_type) {
+				if (fsn->Signature->ReturnType) {
+					fsn->Signature->ReturnType->outputPre(to_inst_stream, OutputFlags);
+					to_inst_stream << " ";
+				}
+				outputSpaceIfNecessary(to_inst_stream);
+			}
+
+			if (func_id->kind() == llvm::ms_demangle::NodeKind::IntrinsicFunctionIdentifier) {
+				auto intrinsic = static_cast<llvm::ms_demangle::IntrinsicFunctionIdentifierNode *>(func_id);
+				if (intrinsic->Operator == llvm::ms_demangle::IntrinsicFunctionKind::LessThan) {
+					add_name = false;
+					add_ids_to_inst_up_to_idx(nr_comps - 2, true);
+					to_inst_stream << "operator< <";
+					intrinsic->TemplateParams->output(to_inst_stream, OutputFlags);
+					to_inst_stream << ">";
+				}
+			} else if (func_id->kind() == llvm::ms_demangle::NodeKind::StructorIdentifier) {
+				add_name = false;
+				add_ids_to_inst_up_to_idx(nr_comps - 2, true);
+				auto structor = static_cast<llvm::ms_demangle::StructorIdentifierNode *>(func_id);
+				output_without_template(structor->Class, to_inst_stream);
+			}
+
+			if(add_name)
+				fsn->Name->output(to_inst_stream, OutputFlags);
+
+			fsn->Signature->outputPost(to_inst_stream, OutputFlags);
+		} else { // if it might be exported from a class template
+			add_ids_to_inst_up_to_idx(last_template_idx);
+		}
+		to_inst_stream += '\0';
+
+		to_match_buf.update(to_match_stream);
+		to_inst_buf.update(to_inst_stream);
+
+		return symbol_to_inst { symbol.name, to_match_stream.getBuffer(), to_inst_stream.getBuffer() };
 	}
 
-	std::vector<name_symbol_pair> get_list_from_symbols(const std::vector<std::string> & unresolved_symbols) {
-		std::vector<name_symbol_pair> ret;
-		for (const std::string& unresolved_symbol : unresolved_symbols) {
-			auto nsp_opt = get_nsp(unresolved_symbol);
-			if (!nsp_opt)
+	std::vector<symbol_to_inst> get_list_from_symbols(const std::vector<symbol> & unresolved_symbols) {
+		std::vector<symbol_to_inst> ret;
+		for (const symbol& unresolved_symbol : unresolved_symbols) {
+			auto s_opt = get_inst(unresolved_symbol);
+			if (!s_opt)
 				continue;
-			auto &nsp = nsp_opt.value();
+			symbol_to_inst & s = s_opt.value();
 			// if it's a class template you can have multiple unresolved members of it
 			// but the class template instantiation should only be added once
-			if (ret.end() != std::find_if(ret.begin(), ret.end(), [&](auto &p) { return p.to_inst == nsp.to_inst; }))
+			if (ret.end() != std::find_if(ret.begin(), ret.end(), [&](auto &p) { return p.to_inst == s.to_inst; }))
 				continue;
-			ret.emplace_back(std::move(nsp));
+			ret.emplace_back(std::move(s));
 		}
 		return ret;
 	}
@@ -111,34 +217,44 @@ int test_link()
 {
 	unresolved_name_matcher matcher;
 
-	std::vector<std::string> symbols;
-	std::vector<unresolved_name_matcher::name_symbol_pair> expected_nsps;
-	auto add = [&](const char * symbol, const char *name, const char *to_inst) {
-		symbols.emplace_back(symbol);
-		expected_nsps.push_back({ name, symbol, to_inst });
+	std::vector<symbol> inputs;
+	std::vector<symbol_to_inst> expected_results;
+	auto add = [&](const char * name, const char *mangled, const char *to_match, const char *to_inst) {
+		inputs.push_back({ name, mangled });
+		expected_results.push_back({ name, to_match, to_inst });
 	};
 
 	add("private: class D1::D1<char>::D11<int *> * __cdecl D1::D1<char>::D11<int *>::foo<&void __cdecl D::dummy(char const &) > (class D1::D1<char>::D11<int *> *)",
-		"D1::D1::D11::foo", "class D1::D1<char>::D11<int *> * __cdecl D1::D1<char>::D11<int *>::foo<&void __cdecl D::dummy(char const &) > (class D1::D1<char>::D11<int *> *)");
+		"", "D1::D1::D11::foo", "class D1::D1<char>::D11<int *> * __cdecl D1::D1<char>::D11<int *>::foo<&void __cdecl D::dummy(char const &) > (class D1::D1<char>::D11<int *> *)");
 	add("public: static void __cdecl B::B::foo<bool>(void)",
-		"B::B::foo", "void __cdecl B::B::foo<bool>(void)");
+		"", "B::B::foo", "void __cdecl B::B::foo<bool>(void)");
 	add("void __cdecl Aa1::B_3s<f::g<int, float>::h<char, i<int,int>::j>::val>::f::g<int, float>::h(void)",
-		"Aa1::B_3s::f::g::h", "struct Aa1::B_3s<f::g<int, float>::h<char, i<int,int>::j>::val>::f::g<int, float>");
+		"", "Aa1::B_3s::f::g::h", "struct Aa1::B_3s<f::g<int, float>::h<char, i<int,int>::j>::val>::f::g<int, float>");
 	add("public: static void __cdecl C::C<char>::foo(void)",
-		"C::C::foo", "struct C::C<char>");
+		"", "C::C::foo", "struct C::C<char>");
 	add("public: static void __cdecl D::D<char &>::d_foo<int *>(void)",
-		"D::D::d_foo", "void __cdecl D::D<char &>::d_foo<int *>(void)");
+		"", "D::D::d_foo", "void __cdecl D::D<char &>::d_foo<int *>(void)");
+	add("public: __cdecl C::C<char>::C<char><int>(int)", // remove both last templates
+		"", "C::C::C", "__cdecl C::C<char>::C(int)");
+	add("public: __cdecl C::C<char>::operator<int> int(void)",
+		"", "C::C::operator", "__cdecl C::C<char>::operator int(void);");
+	add("public: void __cdecl C::C<char>::operator()<int>(int)",
+		"", "C::C::operator()", "void __cdecl C::C<char>::operator()<int>(int)");
+	add("public: bool __cdecl C::C<char>::operator<<int>(int)",
+		"", "C::C::operator<", "__cdecl C::C<char>::operator< <int>(int)"); // needs space after operator
+	add("public: struct C::C<char> & __cdecl C::C<char>::operator=<int>(int)",
+		"", "C::C::operator=", "struct C::C<char> & __cdecl C::C<char>::operator=<int>(int)");
 
-	auto nsps = matcher.get_list_from_symbols(symbols);
+	auto results = matcher.get_list_from_symbols(inputs);
 
-	if (nsps != expected_nsps) {
-		for (std::size_t i = 0; i < std::min(nsps.size(), expected_nsps.size()); ++i) {
-			auto &nsp = nsps[i], &nsp_exp = expected_nsps[i];
-			if (!(nsp == nsp_exp)) {
-				fmt::print("expected "); nsp_exp.print();
-				fmt::print(" but got "); nsp.print();
+	if (results != expected_results) {
+		for (std::size_t i = 0; i < std::min(results.size(), expected_results.size()); ++i) {
+			auto &r = results[i], &r_exp = expected_results[i];
+			if (!(r == r_exp)) {
+				fmt::print("expected "); r.print();
+				fmt::print(" but got "); r.print();
 				fmt::print("\n");
-				matcher.get_nsp(nsp_exp.symbol);
+				matcher.get_inst(inputs[i]);
 			}
 		}
 		fmt::print("failed");
@@ -148,15 +264,13 @@ int test_link()
 	return 0;
 }
 
-std::optional< std::vector<std::string> > get_unresolved_symbols(std::string_view log_file, std::string_view project_name)
+std::optional< std::vector<symbol> > get_unresolved_symbols(std::string_view log_file, std::string_view project_name)
 {
-	std::vector<std::string> unresolved_symbols;
+	std::vector<symbol> unresolved_symbols;
 
 	/*
-	LINK : warning LNK4075: ignoring '/INCREMENTAL' due to '/FORCE' specification
 	 Creating library C:\src\...\ModuleTest.lib and object C:\src\...\ModuleTest.exp
 CUDATest2.lib(kernel.obj) : error LNK2019: unresolved external symbol "bool __cdecl split::addWithCuda<short>(short *,short const *,short const *,int)" (??$addWithCuda@F@split@@YA_NPEAFPEBF1H@Z) referenced in function "int __cdecl test_cuda(void)" (?test_cuda@@YAHXZ)
-C:\src\...\ModuleTest.exe : warning LNK4088: image being generated due to /FORCE option; image may not run
   ModuleTest.vcxproj -> C:\src\...\ModuleTest.exe
 	*/
 
@@ -188,17 +302,19 @@ C:\src\...\ModuleTest.exe : warning LNK4088: image being generated due to /FORCE
 	// note: in Debug the error is LNK2019, in Release the error is LNK2001
 	needle = ": unresolved external symbol \"";
 	std::boyer_moore_searcher searcher(needle.begin(), needle.end());
+	pcrecpp::RE symbol_pattern { R""(([^"]*)" \(([^)]*))"" };
 	while ((it = std::search(it, log_contents.end(), searcher)) != log_contents.end())
 	{
 		it += needle.size();
-		auto it_end = std::find(it, log_contents.end(), '\"');
-		if (it_end == log_contents.end()) {
-			fmt::print("failed to match quotation marks\n");
+		symbol s;
+		char *log_ptr = &log_contents[0] + (it - log_contents.begin());
+		if(!symbol_pattern.PartialMatch(log_ptr, &s.name, &s.mangled)) {
+			fmt::print("failed to parse symbol name / mangled name from the log\n");
 			return {};
 		}
-		std::string &symbol = unresolved_symbols.emplace_back(it, it_end);
-		fmt::print("found unresolved symbol: {}\n", symbol);
-		it = it_end;
+
+		fmt::print("found unresolved symbol: {}\n", s.name);
+		unresolved_symbols.emplace_back(std::move(s));
 	}
 	return unresolved_symbols;
 }
@@ -257,7 +373,7 @@ int do_link(int argc, const char *argv[]) {
 			for (auto exported_symbol : inst_file.get_exported_symbols()) {
 				bool got_one = false;
 				remove_if_and_erase(remaining_unresolved_names, [&](auto & p) {
-					if (string_starts_with(p.name, exported_symbol.get())) {
+					if (string_starts_with(p.to_match, exported_symbol.get())) {
 						// normally if the symbol is unresolved then it shouldn't be instantiated in the .xti file
 						// but it can be missing if the build system didn't rebuild the implementation file
 						// todo: what if the symbol instantiation is there but rendered slightly differently ?
@@ -266,7 +382,7 @@ int do_link(int argc, const char *argv[]) {
 							return true;
 						}
 
-						fmt::print("adding explicit instantiation '{}' for '{}' to '{}'\n", p.to_inst, p.symbol, inst_file_path);
+						fmt::print("adding explicit instantiation '{}' for '{}' to '{}'\n", p.to_inst, p.name, inst_file_path);
 						inst_file.append_instantiated_symbol(p.to_inst);
 						got_one = true;
 						return true;

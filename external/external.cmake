@@ -20,3 +20,17 @@ message(STATUS "Installing cppast via submodule")
 execute_process(COMMAND git submodule update --init -- external/cppast
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_subdirectory(external/cppast EXCLUDE_FROM_ALL)
+
+# add llvm demangle
+message(STATUS "Installing llvm Demangle via submodule")
+execute_process(COMMAND git submodule update --init -- external/llvm_demangle
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+				
+add_library(llvm_demangle STATIC)
+target_sources(llvm_demangle PRIVATE
+	external/llvm_demangle/lib/Demangle/MicrosoftDemangle.cpp
+	external/llvm_demangle/lib/Demangle/MicrosoftDemangleNodes.cpp
+)
+target_include_directories(llvm_demangle PUBLIC
+	external/llvm_demangle/include
+)

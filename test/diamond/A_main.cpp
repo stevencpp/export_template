@@ -11,6 +11,13 @@ int main()
 	std::vector<int> v = { 1, 2, 3, 4 };
 	A::foo(v);
 	B::B::foo<bool>();
-	C::C<char>::foo();
+	
+	int x = 2;
+	C::C<char> c { x };
+	c.foo();
+	c(x);
+	if(c > x) x = c << x;
+	if (std::move(c) < x) c = x;
+
 	D::D<double>::foo<double>();
 }

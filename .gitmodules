@@ -1,3 +1,6 @@
 [submodule "external/cppast"]
 	path = external/cppast
 	url = https://github.com/stevencpp/cppast
+[submodule "external/llvm_demangle"]
+	path = external/llvm_demangle
+	url = https://github.com/stevencpp/llvm_demangle.git

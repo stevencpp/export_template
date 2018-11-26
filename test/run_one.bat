@@ -18,7 +18,7 @@ cd build
 
 cmake -G "Visual Studio 15 2017 Win64" ../
 set solution_dir=%mypath%\%test%\build\
-cmake --build . --config Debug -- -v:%verbosity% "/p:Xt_BuildLogPath=build.log;SolutionDir=%solution_dir%;SolutionPath=%solution_dir%test_%test%.sln" -flp:LogFile=build.log;Verbosity=%verbosity_long%
+cmake --build . --config Debug -- -v:%verbosity% "/p:Xt_BuildLogPath=%solution_dir%build.log;SolutionDir=%solution_dir%;SolutionPath=%solution_dir%test_%test%.sln" -flp:LogFile=build.log;Verbosity=%verbosity_long%
 cd %current_path%
 
 :end
