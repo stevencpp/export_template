@@ -3,7 +3,7 @@ project(test_ping_pong LANGUAGES CXX)
 
 find_package(export_template REQUIRED)
 
-add_executable(ping_pong
+add_executable(A
 	ping_pong.cpp
 	ping.h
 	ping.cpp
@@ -11,8 +11,8 @@ add_executable(ping_pong
 	pong.cpp
 )
 
-set_property(TARGET ping_pong PROPERTY CXX_STANDARD 17)
+set_property(TARGET A PROPERTY CXX_STANDARD 17)
 
-target_export_template(ping_pong)
+target_export_template(A)
 
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ping_pong)
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT A)

@@ -23,6 +23,11 @@ target_include_directories(xt_inst_gen
 	PRIVATE ${PCRE_INCLUDE_DIR}
 )
 
+if(MSVC)
+	#doesn't work due to MSVC bug triggered by type_safe
+	#target_compile_options(xt_inst_gen PRIVATE /permissive-)
+endif()
+
 target_link_libraries(xt_inst_gen 
 	PRIVATE cppast
 	PRIVATE fmt::fmt

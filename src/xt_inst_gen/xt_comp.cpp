@@ -134,6 +134,9 @@ int find_exported_templates(
 		if (info.event == cppast::visitor_info::container_entity_exit)
 			return true; // already handled
 
+		// TODO: If an exported class/function is a member of an exported class
+		// then we shouldn't emit a separate entry for that.
+
 		if (e.kind() == cppast::cpp_function_template::kind() &&
 			cppast::has_attribute(e, "export_template"))
 		{
@@ -150,6 +153,8 @@ int find_exported_templates(
 		#endif
 
 			fmt::print("function template: {}\n", full_name);
+			if (cppast::has_attribute(e, "dllexport")) // todo
+				fmt::print("is exported\n");
 
 			symbol_cb(full_name);
 		}
@@ -163,6 +168,8 @@ int find_exported_templates(
 			std::string full_name = get_fully_qualified_name_without_templates(class_);
 
 			fmt::print("class template: {}\n", full_name);
+			if (cppast::has_attribute(e, "dllexport")) // todo
+				fmt::print("is exported\n");
 
 			symbol_cb(full_name);
 		}

@@ -55,7 +55,7 @@ static void outputSpaceIfNecessary(OutputStream &OS) {
 		OS << " ";
 }
 
-struct unresolved_name_matcher
+struct unresolved_symbol_parser
 {
 	struct buf {
 		char * p = nullptr;
@@ -79,6 +79,7 @@ struct unresolved_name_matcher
 	std::optional<symbol_to_inst> get_inst(const symbol & symbol) {
 		llvm::ms_demangle::Demangler D;
 		StringView Name { symbol.mangled.c_str() };
+		bool is_dll_imported = Name.consumeFront("__imp_");
 		llvm::ms_demangle::SymbolNode *AST = D.parse(Name);
 		if (D.Error) {
 			fmt::print("ERROR: failed to demangle symbol '{}' ({})\n", symbol.mangled, symbol.name);
@@ -144,6 +145,9 @@ struct unresolved_name_matcher
 		};
 
 		if (last_template_idx == nr_comps - 1) { // if it's a function template
+			if (is_dll_imported)
+				to_inst_stream << "__declspec(dllexport) ";
+
 			bool add_return_type = true;
 			bool add_name = true;
 
@@ -196,7 +200,7 @@ struct unresolved_name_matcher
 		return symbol_to_inst { symbol.name, to_match_stream.getBuffer(), to_inst_stream.getBuffer() };
 	}
 
-	std::vector<symbol_to_inst> get_list_from_symbols(const std::vector<symbol> & unresolved_symbols) {
+	std::vector<symbol_to_inst> get_symbols_to_inst(const std::vector<symbol> & unresolved_symbols) {
 		std::vector<symbol_to_inst> ret;
 		for (const symbol& unresolved_symbol : unresolved_symbols) {
 			auto s_opt = get_inst(unresolved_symbol);
@@ -215,7 +219,7 @@ struct unresolved_name_matcher
 
 int test_link()
 {
-	unresolved_name_matcher matcher;
+	unresolved_symbol_parser parser;
 
 	std::vector<symbol> inputs;
 	std::vector<symbol_to_inst> expected_results;
@@ -245,7 +249,7 @@ int test_link()
 	add("public: struct C::C<char> & __cdecl C::C<char>::operator=<int>(int)",
 		"", "C::C::operator=", "struct C::C<char> & __cdecl C::C<char>::operator=<int>(int)");
 
-	auto results = matcher.get_list_from_symbols(inputs);
+	auto results = parser.get_symbols_to_inst(inputs);
 
 	if (results != expected_results) {
 		for (std::size_t i = 0; i < std::min(results.size(), expected_results.size()); ++i) {
@@ -254,7 +258,7 @@ int test_link()
 				fmt::print("expected "); r.print();
 				fmt::print(" but got "); r.print();
 				fmt::print("\n");
-				matcher.get_inst(inputs[i]);
+				parser.get_inst(inputs[i]);
 			}
 		}
 		fmt::print("failed");
@@ -264,7 +268,7 @@ int test_link()
 	return 0;
 }
 
-std::optional< std::vector<symbol> > get_unresolved_symbols(std::string_view log_file, std::string_view project_name)
+std::optional< std::vector<symbol> > get_unresolved_symbols(std::string_view log_file)
 {
 	std::vector<symbol> unresolved_symbols;
 
@@ -284,11 +288,24 @@ CUDATest2.lib(kernel.obj) : error LNK2019: unresolved external symbol "bool __cd
 	}
 	auto & log_contents = log_contents_opt.value();
 
-	// linking might need to be done multiple times during the build
-	// (either for the same project, iteratively, or for DLL dependencies)
-	// our custom target runs before every link and prints this
-	// to make it easy to find the unresolved symbols from only the last link
-	std::string needle = str_cat("linking project ", project_name);
+	// Linking might need to be done multiple times during the build, for example
+	// if project A depends on but does not link with project B, a DLL, then
+	// B will build before A so when B fails to link it starts the custom linker
+	// loop, which needs to resolve all current unresolved symbols. 
+	// Assuming every transitively dependent project uses the build customization,
+	// if another link had failed prior to linking B then it would've already triggered
+	// the linker loop so the first iteration of B's linker loop only needs to
+	// look for the last link in the log. To make it easy to find this in the log, 
+	// a custom message is printed by the Xt_PreLink target before every link.
+	// Resolving the symbols for A can result in unresolved symbols injected into B
+	// so both A and B may need to be built during an iteration of A's linker loop.
+	// During A's iterations B's linker loop is disabled so e.g A's second iteration
+	// may need to find the unresolved symbols from both A and B's linker output.
+	// For this the linker loop prints a message before starting to build projects,
+	// the same message printed by Xt_PreLink, but the latter is disabled during
+	// iterations.
+
+	std::string needle = "export_template: building projects";
 	// do a reverse search here with rbegin/rend
 	auto rev_it = std::search(log_contents.rbegin(), log_contents.rend(),
 		std::boyer_moore_searcher(needle.rbegin(), needle.rend()));
@@ -298,7 +315,7 @@ CUDATest2.lib(kernel.obj) : error LNK2019: unresolved external symbol "bool __cd
 	}
 	auto it = rev_it.base();
 
-	// find the unresolved symbols
+	// find the unresolved symbols (both demangled and mangled versions)
 	// note: in Debug the error is LNK2019, in Release the error is LNK2001
 	needle = ": unresolved external symbol \"";
 	std::boyer_moore_searcher searcher(needle.begin(), needle.end());
@@ -320,7 +337,7 @@ CUDATest2.lib(kernel.obj) : error LNK2019: unresolved external symbol "bool __cd
 }
 
 int print_link_usage() {
-	fmt::print("usage: {} link project_name log_file project_list_file inst_files\n", tool_name);
+	fmt::print("usage: {} link log_file project_list_file inst_files\n", tool_name);
 	return 1;
 }
 
@@ -329,20 +346,19 @@ int do_link(int argc, const char *argv[]) {
 	if (argc == 2 && strcmp(argv[1], "test") == 0)
 		return test_link();
 
-	if (argc < 5) {
+	if (argc < 4) {
 		return print_link_usage();
 	}
 
-	auto project_name = argv[1];
-	auto log_file = argv[2];
-	auto project_list_file = argv[3];
-	auto inst_files = argv[4];
+	auto log_file = argv[1];
+	auto project_list_file = argv[2];
+	auto inst_files = argv[3];
 #if 0
 	fmt::print("project: {}\nlog: {}\ninst files: {}\nproj list file: {}\n", 
 		project_name, log_file, inst_files, project_list_file);
 #endif
 	
-	auto unresolved_symbols_opt = get_unresolved_symbols(log_file, project_name);
+	auto unresolved_symbols_opt = get_unresolved_symbols(log_file);
 	if (!unresolved_symbols_opt) {
 		return 1; // failed to parse the log
 	}
@@ -356,10 +372,10 @@ int do_link(int argc, const char *argv[]) {
 	// but if those link errors were not due to unresolved symbols that the tool can fix
 	// the build should fail
 
-	unresolved_name_matcher matcher;
+	unresolved_symbol_parser parser;
 
 	// find the function name for each symbol
-	auto remaining_unresolved_names = matcher.get_list_from_symbols(unresolved_symbols);
+	auto remaining_unresolved_names = parser.get_symbols_to_inst(unresolved_symbols);
 
 	std::set<std::string> projects_to_build;
 
@@ -414,7 +430,7 @@ int do_link(int argc, const char *argv[]) {
 
 	// prevent an infinite loop in case we can't fix any remaining unresolved symbols
 	if (projects_to_build.empty()) {
-		fmt::print("nothing to build");
+		fmt::print("nothing to build\n");
 		return 1;
 	}
 

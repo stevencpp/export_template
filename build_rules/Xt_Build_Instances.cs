@@ -269,7 +269,7 @@ public class Xt_Build_Instances : Task
 	
 	bool Build(ITaskItem[] items_to_build)
 	{
-		Log.LogMessage(MessageImportance.High, "building projects");
+		Log.LogMessage(MessageImportance.High, "export_template: building projects");
 		build.Projects = items_to_build;
 		return build.Execute();
 	}

@@ -21,9 +21,7 @@ int main(int argc, const char *argv[])
 		if (cmd == "comp") {
 			return do_comp(argc - 1, &argv[1]);
 		} else if (cmd == "link") {
-			int ret = do_link(argc - 1, &argv[1]);
-			fmt::print("finished with error code {}\n", ret);
-			return ret;
+			return do_link(argc - 1, &argv[1]);
 		} else if (cmd == "filt") {
 			return do_filt(argc - 1, &argv[1]);
 		} else {

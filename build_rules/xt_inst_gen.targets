@@ -145,7 +145,7 @@
     <PropertyGroup>
       <!-- the command does not include the last parameter, the list of referenced xti files,
            that will be added by the Xt_Build_Instances task !-->
-      <Xt_Command_Link>$(Xt_Command) link "$(ProjectName)" "$(Xt_BuildLogPath)" "$(Xt_ProjectListFile)"</Xt_Command_Link>
+      <Xt_Command_Link>$(Xt_Command) link "$(Xt_BuildLogPath)" "$(Xt_ProjectListFile)"</Xt_Command_Link>
     </PropertyGroup>
   
     <Message Text="there were link errors - generating template instantiations if necessary" Importance="High"/>
@@ -166,8 +166,8 @@
   <!-- this should make sure there is a consistent message in the log before every link 
        so that even if linking is done multiple times, the link too can still
        find the unresolved symbols from the last link !-->
-  <Target Name="Xt_PreLink" BeforeTargets="Link" DependsOnTargets="BuildCompile" >
-    <Message Text="linking project $(ProjectName)" Importance="High"/>
+  <Target Name="Xt_PreLink" BeforeTargets="Link" DependsOnTargets="BuildCompile" Condition="'$(Xt_Iteration)' == ''" >
+    <Message Text="export_template: building projects" Importance="High"/>
   </Target>
 
 </Project>
