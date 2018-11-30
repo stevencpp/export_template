@@ -1,4 +1,3 @@
-#define DLL_EXPORT
 #include "D.h"
 #include <D.xti>
 

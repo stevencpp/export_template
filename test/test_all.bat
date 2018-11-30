@@ -10,5 +10,6 @@ for %%T in (cuda diamond dll ping_pong) do (
 		goto end
 	)
 )
+echo all tests successful
 
 :end

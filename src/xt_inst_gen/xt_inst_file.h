@@ -70,7 +70,7 @@ struct string_view_ref : public string_range
 	}
 };
 
-template<typename Iter>
+template<typename Iter, typename OutputType = string_view_ref>
 struct string_view_deref_range {
 	std::string & _str_ref;
 	Iter _begin, _end;
@@ -80,7 +80,7 @@ struct string_view_deref_range {
 		Iter _itr;
 
 		using iterator_category = typename Iter::iterator_category;
-		using value_type = string_view_ref;
+		using value_type = OutputType;
 		using difference_type = typename Iter::difference_type;
 		using pointer = value_type *;
 		using reference = value_type &;
@@ -121,17 +121,28 @@ struct xt_inst_file
 {
 	std::string contents;
 	// views into the contents:
-	string_range impl_project { 0, 0 };
-	std::vector<string_range> exported_symbols;
-	std::vector<string_range> instantiated_symbols;
 
-	auto get_impl_project() {
-		return impl_project.get(contents);
-	}
+	string_range version { 0, 0 };
+
+	struct exp_symbol { string_range flags, name; };
+
+	struct exp_symbol_ref : public exp_symbol {
+		std::string & str_ref;
+		std::string_view get_flags() { return flags.get(str_ref); }
+		bool has_flag(const char c) { return get_flags().find(c) != std::string_view::npos;	}
+		bool has_flags(std::string_view cs) {
+			for (const char c : cs) if (!has_flag(c)) return false;
+			return true;
+		}
+		std::string_view get_name() { return name.get(str_ref); }
+	};
+
+	std::vector<exp_symbol> exported_symbols;
+	std::vector<string_range> instantiated_symbols;
 
 	// return a range of string_view_refs
 	auto get_exported_symbols() {
-		return string_view_deref_range<decltype(exported_symbols)::iterator> { 
+		return string_view_deref_range<decltype(exported_symbols)::iterator, exp_symbol_ref> { 
 			contents, exported_symbols.begin(), exported_symbols.end()
 		};
 	}
@@ -143,38 +154,40 @@ struct xt_inst_file
 		};
 	}
 
-	string_range append_enclosed_string(
-		std::string_view before,
-		std::string_view str,
-		std::string_view after)
-	{
-		contents += before;
+	string_range append_string(std::string_view str) {
 		std::size_t pos = contents.size();
 		contents += str;
-		contents += after;
 		return { pos, str.size() };
 	}
 
 	static constexpr std::string_view
-		project_prefix = "// proj ",
+		version_prefix = "// ver ",
 		export_prefix = "// exp ",
 		instantiation_prefix = "template ";
 
-	void append_impl_project(std::string_view project) {
-		impl_project =
-			append_enclosed_string(project_prefix, project, "\n");
+	static constexpr std::string_view
+		current_version = "1";
+
+	void append_version() {
+		contents += version_prefix;
+		contents += current_version;
+		contents += '\n';
 	}
 
-	void append_exported_symbol(std::string_view symbol) {
-		exported_symbols.emplace_back( 
-			append_enclosed_string(export_prefix, symbol, "\n")
-		);
+	void append_exported_symbol(std::string_view symbol, std::string_view flags) {
+		contents += export_prefix;
+		auto flags_range = append_string(flags);
+		contents += ' ';
+		auto name_range = append_string(symbol);
+		contents += '\n';
+		exported_symbols.emplace_back(exp_symbol { flags_range, name_range });
 	}
 
 	void append_instantiated_symbol(std::string_view symbol) {
-		instantiated_symbols.emplace_back(
-			append_enclosed_string(instantiation_prefix, symbol, ";\n")
-		);
+		contents += instantiation_prefix;
+		auto symbol_range = append_string(symbol);
+		contents += ";\n";
+		instantiated_symbols.emplace_back(symbol_range);
 	}
 };
 
@@ -202,6 +215,8 @@ struct xt_inst_file_reader_writer
 		ret.exported_symbols.reserve(nr_lines);
 		ret.instantiated_symbols.reserve(nr_lines);
 
+		std::string_view version;
+
 		auto it = ret.contents.begin();
 		while (it != ret.contents.end()) {
 			auto it_end = std::find(it, ret.contents.end(), '\n');
@@ -217,10 +232,15 @@ struct xt_inst_file_reader_writer
 				return false;
 			};
 
-			if (check_and_remove(xt_inst_file::project_prefix)) {
-				ret.impl_project.set_view(ret.contents, line);
+			if (check_and_remove(xt_inst_file::version_prefix)) {
+				version = line;
 			} else if (check_and_remove(xt_inst_file::export_prefix)) {
-				ret.exported_symbols.emplace_back(ret.contents, line);
+				std::string_view flags = line.substr(0, line.find(' '));
+				std::string_view name = line.substr(flags.size() + 1);
+				ret.exported_symbols.emplace_back(xt_inst_file::exp_symbol {
+					string_range { ret.contents, flags },
+					string_range { ret.contents, name }
+				});
 			} else if (check_and_remove(xt_inst_file::instantiation_prefix)) {
 				line.remove_suffix(1); // for the ; at the end
 				ret.instantiated_symbols.emplace_back(ret.contents, line);
@@ -230,6 +250,12 @@ struct xt_inst_file_reader_writer
 			if (it_end == ret.contents.end()) break;
 			it = it_end + 1;
 		}
+
+		if (version != xt_inst_file::current_version) {
+			fmt::print("note: version mismatch, ignoring file contents\n");
+			ret = {};
+		}
+		
 		return ret;
 	}
 

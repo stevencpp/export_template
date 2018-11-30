@@ -94,7 +94,7 @@
     
     <ItemGroup>
       <Xt_Comp_Set Include="@(Xt_Headers)">
-        <Command>$(Xt_Command) comp "%(FullPath)" "%(Xt_Headers.InstFilePath)" "$(Xt_PreprocessorDefinitions)" "$(Xt_AdditionalIncludeDirectories)" "$(ProjectGuid)"</Command>
+        <Command>$(Xt_Command) comp "%(FullPath)" "%(Xt_Headers.InstFilePath)" "$(Xt_PreprocessorDefinitions)" "$(Xt_AdditionalIncludeDirectories)"</Command>
       </Xt_Comp_Set>
     </ItemGroup>
     

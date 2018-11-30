@@ -71,7 +71,7 @@ int find_exported_templates(
 	std::string file_path,
 	const std::vector<std::string_view> & pp_defs,
 	const std::vector<std::string_view> & include_dirs,
-	const std::function<void(const std::string &)> & symbol_cb)
+	const std::function<void(const std::string &, std::string_view)> & symbol_cb)
 {
 	//bug?: this doesn't work with backslashes !
 	std::replace(file_path.begin(), file_path.end(), '\\', '/');
@@ -153,10 +153,9 @@ int find_exported_templates(
 		#endif
 
 			fmt::print("function template: {}\n", full_name);
-			if (cppast::has_attribute(e, "dllexport")) // todo
-				fmt::print("is exported\n");
 
-			symbol_cb(full_name);
+			char * flags = cppast::has_attribute(e, "dllexport") ? "fd" : "f";
+			symbol_cb(full_name, flags);
 		}
 
 		if (e.kind() == cppast::cpp_class_template::kind() &&
@@ -168,10 +167,9 @@ int find_exported_templates(
 			std::string full_name = get_fully_qualified_name_without_templates(class_);
 
 			fmt::print("class template: {}\n", full_name);
-			if (cppast::has_attribute(e, "dllexport")) // todo
-				fmt::print("is exported\n");
 
-			symbol_cb(full_name);
+			char * flags = cppast::has_attribute(e, "dllexport") ? "cd" : "c";
+			symbol_cb(full_name, flags);
 		}
 
 		return true;
@@ -183,12 +181,12 @@ int find_exported_templates(
 
 int print_comp_usage() {
 	fmt::print("usage: {} comp xt_file_path xt_inst_file_path "
-		"preprocessor_definitions include_directories impl_project_name\n", tool_name);
+		"preprocessor_definitions include_directories\n", tool_name);
 	return 1;
 }
 
 int do_comp(int argc, const char *argv[]) {
-	if (argc < 6) {
+	if (argc < 5) {
 		return print_comp_usage();
 	}
 
@@ -203,8 +201,6 @@ int do_comp(int argc, const char *argv[]) {
 
 	std::vector<std::string_view> pp_defs = split_string_to_views(argv[3], ';');
 	std::vector<std::string_view> include_dirs = split_string_to_views(argv[4], ';');
-
-	auto impl_project = argv[5];
 
 	// first ensure that the path to the .xti exists
 	if (std::error_code err;
@@ -221,6 +217,8 @@ int do_comp(int argc, const char *argv[]) {
 		xt_inst_file xti_old = xti_rw.read();
 		xt_inst_file xti;
 
+		xti.append_version();
+
 		// note: the linker needs to have a list of exported symbols
 		// to match the unresolved symbols against, and ideally
 		// that information could be embedded in the implementation object files
@@ -230,18 +228,13 @@ int do_comp(int argc, const char *argv[]) {
 		// then if the link tool appends the template instantiations to the .xti files,
 		// the implemenation files that include the .xti should get rebuilt next time
 
-		// the post-link build rules don't compile specific files,
-		// (note: there can be more than one implementation file for a particular header)
-		// they just build the projects which contain files that changed
-		// so this allows them to associate xti files to projects
-		xti.append_impl_project(impl_project);
-
 		// todo: now we parse the interface header, but we don't really know 
 		// if definitions are actually provided in the impelementation files.
 		// might be better to parse the implementation file and only emit the defined symbols ?
-		int ret = find_exported_templates(header_path, pp_defs, include_dirs, [&](const std::string & symbol) {
-			xti.append_exported_symbol(symbol);
-		});
+		int ret = find_exported_templates(header_path, pp_defs, include_dirs, 
+			[&](const std::string & symbol, std::string_view flags) {
+				xti.append_exported_symbol(symbol, flags);
+			});
 
 		if (ret) return ret;
 

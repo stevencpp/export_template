@@ -2,12 +2,12 @@
 
 #include <memory>
 
-#if defined(DLL_EXPORT)
-#define DLL_SPEC __declspec(dllexport)
-#elif defined(DLL_IMPORT)
-#define DLL_SPEC __declspec(dllimport)
+#if defined(B_DLL_EXPORT)
+#define B_DLL_SPEC __declspec(dllexport)
+#elif defined(B_DLL_IMPORT)
+#define B_DLL_SPEC __declspec(dllimport)
 #else
-#define DLL_SPEC
+#define B_DLL_SPEC
 #endif
 
 #pragma warning (push)
@@ -20,10 +20,10 @@ namespace B
 		virtual void foo() = 0;
 		virtual ~Interface() {};
 
-		static DLL_SPEC auto create(const char * path) -> std::shared_ptr<Interface>;
+		static B_DLL_SPEC auto create(const char * path) -> std::shared_ptr<Interface>;
 	};
 
 } // namespace B
 #pragma warning (pop)
 
-#undef DLL_SPEC
+#undef B_DLL_SPEC

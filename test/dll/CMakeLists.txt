@@ -19,9 +19,18 @@ add_library(B SHARED
 	B.h
 )
 
+target_compile_definitions(B
+	PRIVATE B_DLL_EXPORT
+)
+
 add_library(D SHARED
 	D.cpp
 	D.h
+)
+
+target_compile_definitions(D 
+	PRIVATE D_DLL_EXPORT
+	INTERFACE D_DLL_IMPORT
 )
 
 target_link_libraries(B C)

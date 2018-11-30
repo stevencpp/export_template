@@ -9,6 +9,7 @@
 #include <map>
 #include <set>
 #include <cctype>
+#include <bitset>
 
 #include <fmt/core.h>
 #include <fmt/ostream.h>
@@ -35,6 +36,17 @@ struct symbol_to_inst
 	std::string name; // demangled name of the symbol
 	std::string to_match; // fully qualified function/class name without templates
 	std::string to_inst; // code generated for explicit instantiation
+
+	enum class flag : char {
+		CLASS, // is a function if not set
+		DLLEXP // has __declspec(dllexport)
+	};
+
+	std::bitset<2> flags;
+	bool has_flag(flag f) { return flags.test((size_t)f); }
+	bool is_class() { return has_flag(flag::CLASS); }
+	bool is_function() { return !is_class(); }
+	bool is_dll_exported() { return has_flag(flag::DLLEXP); }
 
 	bool operator ==(const symbol_to_inst & p) const {
 		return name == p.name && to_match == p.to_match && to_inst == p.to_inst;
@@ -144,9 +156,13 @@ struct unresolved_symbol_parser
 			});
 		};
 
+		decltype(symbol_to_inst::flags) flags;
+
 		if (last_template_idx == nr_comps - 1) { // if it's a function template
-			if (is_dll_imported)
+			if (is_dll_imported) {
+				flags.set((size_t)symbol_to_inst::flag::DLLEXP);
 				to_inst_stream << "__declspec(dllexport) ";
+			}
 
 			bool add_return_type = true;
 			bool add_name = true;
@@ -190,6 +206,7 @@ struct unresolved_symbol_parser
 
 			fsn->Signature->outputPost(to_inst_stream, OutputFlags);
 		} else { // if it might be exported from a class template
+			flags.set((size_t)symbol_to_inst::flag::CLASS);
 			add_ids_to_inst_up_to_idx(last_template_idx);
 		}
 		to_inst_stream += '\0';
@@ -197,10 +214,17 @@ struct unresolved_symbol_parser
 		to_match_buf.update(to_match_stream);
 		to_inst_buf.update(to_inst_stream);
 
-		return symbol_to_inst { symbol.name, to_match_stream.getBuffer(), to_inst_stream.getBuffer() };
+		return symbol_to_inst {
+			symbol.name,
+			to_match_stream.getBuffer(),
+			to_inst_stream.getBuffer(),
+			flags
+		};
 	}
 
-	std::vector<symbol_to_inst> get_symbols_to_inst(const std::vector<symbol> & unresolved_symbols) {
+	std::vector<symbol_to_inst> get_symbols_to_inst(
+		const std::vector<symbol> & unresolved_symbols
+	) {
 		std::vector<symbol_to_inst> ret;
 		for (const symbol& unresolved_symbol : unresolved_symbols) {
 			auto s_opt = get_inst(unresolved_symbol);
@@ -209,7 +233,9 @@ struct unresolved_symbol_parser
 			symbol_to_inst & s = s_opt.value();
 			// if it's a class template you can have multiple unresolved members of it
 			// but the class template instantiation should only be added once
-			if (ret.end() != std::find_if(ret.begin(), ret.end(), [&](auto &p) { return p.to_inst == s.to_inst; }))
+			if (s.is_class() && ret.end() != std::find_if(ret.begin(), ret.end(), 
+				[&](auto &p) { return p.to_inst == s.to_inst; }
+			))
 				continue;
 			ret.emplace_back(std::move(s));
 		}
@@ -377,7 +403,9 @@ int do_link(int argc, const char *argv[]) {
 	// find the function name for each symbol
 	auto remaining_unresolved_names = parser.get_symbols_to_inst(unresolved_symbols);
 
-	std::set<std::string> projects_to_build;
+	int num_added_instantiations = 0;
+
+	std::string to_inst_tmp;
 
 	//find the files which have definitions for each symbol
 	std::vector<std::string_view> inst_files_vec = split_string_to_views(inst_files, ';');
@@ -389,18 +417,32 @@ int do_link(int argc, const char *argv[]) {
 			for (auto exported_symbol : inst_file.get_exported_symbols()) {
 				bool got_one = false;
 				remove_if_and_erase(remaining_unresolved_names, [&](auto & p) {
-					if (string_starts_with(p.to_match, exported_symbol.get())) {
+					if (string_starts_with(p.to_match, exported_symbol.get_name())) {
+						std::string_view to_inst = p.to_inst;
+
+						// The following situation results in a DLL exported symbol
+						// whose mangled name does not have a way to tell that it's exported:
+						// template<typename T> class __declspec(dllexport) [[export_template]] A {
+						//   template<typename U> void foo(); 
+						// }
+						if (exported_symbol.has_flags("cd") && p.is_function() && !p.is_dll_exported()) {
+							to_inst_tmp = "__declspec(dllexport) ";
+							to_inst_tmp += p.to_inst;
+							to_inst = to_inst_tmp;
+						}
+
 						// normally if the symbol is unresolved then it shouldn't be instantiated in the .xti file
 						// but it can be missing if the build system didn't rebuild the implementation file
 						// todo: what if the symbol instantiation is there but rendered slightly differently ?
-						if (inst_file.get_instantiated_symbols().contains(p.to_inst)) {
-							fmt::print("ERROR: symbol '{}' already instantiated in '{}'\n", p.to_inst, inst_file_path);
+						if (inst_file.get_instantiated_symbols().contains(to_inst)) {
+							fmt::print("ERROR: symbol '{}' already instantiated in '{}'\n", to_inst, inst_file_path);
 							return true;
 						}
 
-						fmt::print("adding explicit instantiation '{}' for '{}' to '{}'\n", p.to_inst, p.name, inst_file_path);
-						inst_file.append_instantiated_symbol(p.to_inst);
+						fmt::print("adding explicit instantiation '{}' for '{}' to '{}'\n", to_inst, p.name, inst_file_path);
+						inst_file.append_instantiated_symbol(to_inst);
 						got_one = true;
+						num_added_instantiations++;
 						return true;
 					}
 					return false;
@@ -409,8 +451,6 @@ int do_link(int argc, const char *argv[]) {
 					// write all of the new instantiations to the .xti file
 					// this should trigger a recompile for all of the implementation files
 					inst_file_rw.append_diff(inst_file);
-
-					projects_to_build.emplace(inst_file.get_impl_project());
 				}
 			}
 		} catch (std::runtime_error e) {
@@ -424,13 +464,10 @@ int do_link(int argc, const char *argv[]) {
 		fmt::print("failed to open {}\n", project_list_file);
 		return 1;
 	}
-	for (auto & project : projects_to_build) {
-		fmt::print(f_proj, "{}\n", project);
-	}
 
 	// prevent an infinite loop in case we can't fix any remaining unresolved symbols
-	if (projects_to_build.empty()) {
-		fmt::print("nothing to build\n");
+	if (num_added_instantiations == 0) {
+		fmt::print("could not address any unresolved symbols\n");
 		return 1;
 	}
 
