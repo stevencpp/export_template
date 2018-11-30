@@ -416,6 +416,7 @@ int do_link(int argc, const char *argv[]) {
 
 			for (auto exported_symbol : inst_file.get_exported_symbols()) {
 				bool got_one = false;
+				// todo: use a trie or binary search or something to speed up the prefix search
 				remove_if_and_erase(remaining_unresolved_names, [&](auto & p) {
 					if (string_starts_with(p.to_match, exported_symbol.get_name())) {
 						std::string_view to_inst = p.to_inst;

@@ -251,7 +251,7 @@ struct xt_inst_file_reader_writer
 			it = it_end + 1;
 		}
 
-		if (version != xt_inst_file::current_version) {
+		if (!ret.contents.empty() && version != xt_inst_file::current_version) {
 			fmt::print("note: version mismatch, ignoring file contents\n");
 			ret = {};
 		}

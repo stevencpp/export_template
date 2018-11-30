@@ -2,7 +2,7 @@
 set current_path=%cd%
 set mypath=%~dp0
 
-for %%T in (cuda diamond dll ping_pong) do (
+for %%T in (ping_pong diamond cuda dll) do (
 	call full_clean_one.bat %%T
 	call run_one.bat %%T
 	if not exist %mypath%\%%T\build\Debug\A.exe (

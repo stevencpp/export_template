@@ -175,7 +175,7 @@ int find_exported_templates(
 		return true;
 	});
 
-	fmt::print("finished parsing\n");
+	//fmt::print("finished parsing\n");
 	return 0;
 }
 

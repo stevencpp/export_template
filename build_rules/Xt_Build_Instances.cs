@@ -158,6 +158,8 @@ public class Xt_Build_Instances : Task
 			// by construction guid_to_node should only contain projects that
 			// the root project references or depends on transitively
 			foreach(Node node in guid_to_node.Values) {
+				//TODO: each project should just write the list of .xti files to a cache file
+				//so we don't have to reconstruct it from the header cache file here
 				string[] props = {"Xt_InstFilePath_FromHeader", "Xt_InstFilePath", "Xt_HeaderCachePath", "Xt_InstSuffix"};
 				string[] values = props.Select(prop => node.project.GetPropertyValue(prop)).ToArray();
 				if(values.Any(value => value == "")) continue;
